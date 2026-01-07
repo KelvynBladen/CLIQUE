@@ -6,14 +6,12 @@ lichen$StandAgeClass = as.numeric(lichen$StandAgeClass) - 1
 lichen$ReserveStatus = as.numeric(lichen$ReserveStatus) - 1
 usethis::use_data(lichen, overwrite = TRUE)
 
-
 concrete = MAVE::Concrete
 colnames(concrete)
 colnames(concrete) = c("Cement", "Slag", "FlyAsh",
                    "Water", "Superplast", "CoarseAgg",
                    "FineAgg", "Age", "Strength")
 usethis::use_data(concrete, overwrite = TRUE)
-
 
 mnist = read.csv("inst/extdata/mnist_small.csv", header = T)
 mnist$y = factor(mnist$y)

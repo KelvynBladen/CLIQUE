@@ -1,0 +1,134 @@
+---
+title: "local_imp_functions"
+author: "Kelvyn Bladen"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(fastDummies)
+library(caret)
+library(rpart)
+library(tidyverse)
+library(GGally)
+library(treeshap)
+library(lime)
+library(patchwork)
+library(tictoc)
+```
+
+\newpage
+# Data
+
+```{r, message=FALSE, warning=FALSE}
+
+dfc = read.csv("dfc_r.csv")
+
+dfc$y = factor(dfc$y)
+dfc$z1 = factor(dfc$z1)
+dfc$z2 = factor(dfc$z2)
+
+sup = factor(ifelse(z2 == F, 0, ifelse(z1 == F, 2, 1)))
+
+
+ggdat = ggplot(dfc, aes(v1, v2, colour = y)) + geom_point(size = 2) +
+  scale_color_manual(values = c("#2CA02C", "#9467BD"))
+ggdat
+ggsave("corn2_dat1.pdf", dpi = 1600, width = 4, height = 2.5)
+#ggsave("corn2_dat.jpg", dpi = 800, width = 3.6, height = 2.5) 
+
+# ggplot(dfc, aes(v1, v2, colour = sup)) + geom_point(size = 2)
+# ggsave("xor2.pdf", dpi = 800, width = 4, height = 2.5)
+```
+
+\newpage
+
+# Importance
+
+```{r, warning=FALSE, message=FALSE}
+d1 = read.csv("df_v1_r.csv")
+d1
+
+names(d1) = c("v1", "CLIQUE", "ICI", "SHAP", "LIME", "z2")
+
+d2 = read.csv("df_v2_r.csv")
+d2
+
+names(d2) = c("v2", "CLIQUE", "ICI", "SHAP", "LIME", "z1")
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+gq = ggplot(d1, aes(x = v1, y = CLIQUE, color = z2)) +
+  geom_point() + ylim(-1, 1)
+gq
+gs = ggplot(d1, aes(x = v1, y = SHAP, color = z2)) +
+  geom_point() + scale_y_continuous(limits = c(-0.55, 0.55), breaks = -2:2 * 0.25)
+gs
+gl = ggplot(d1, aes(x = v1, y = LIME, color = z2)) +
+  geom_point() + scale_y_continuous(limits = c(-0.55, 0.55), breaks = -2:2 * 0.25)
+gl
+gi = ggplot(d1, aes(x = v1, y = ICI, color = z2)) +
+  geom_point() + ylim(-1, 1)
+gi
+
+patch = gl + gs + gi + gq + 
+  plot_layout(guides = "collect", axes = "collect", 
+              axis_titles = "collect") &
+  ggeasy::easy_add_legend_title("|v2| > 1/4") #&
+  #scale_color_manual(values = c("#F8766D", "#01ADD8"))
+patch & ggeasy::easy_move_legend("bottom")
+
+ggsave("corn2patch_v1r.jpg", dpi = 1200, width = 4.4, height = 4.4)
+
+patch
+
+ggsave("corn2patch_v1r_1col.jpg", dpi = 1200, width = 5.5, height = 3.3)
+```
+
+```{r, warning=FALSE, message=FALSE}
+gq2 = ggplot(d2, aes(x = v2, y = CLIQUE, color = z1)) +
+  geom_point() + ylim(-1, 1)
+gq2
+gs2 = ggplot(d2, aes(x = v2, y = SHAP, color = z1)) +
+  geom_point() + scale_y_continuous(limits = c(-0.55, 0.55), breaks = -2:2 * 0.25)
+gs2
+gl2 = ggplot(d2, aes(x = v2, y = LIME, color = z1)) +
+  geom_point() + scale_y_continuous(limits = c(-0.55, 0.55), breaks = -2:2 * 0.25)
+gl2
+gi2 = ggplot(d2, aes(x = v2, y = ICI, color = z1)) +
+  geom_point() + ylim(-1, 1)
+gi2
+
+patch2 = gl2 + gs2 + gi2 + gq2 + 
+  plot_layout(guides = "collect", axes = "collect", 
+              axis_titles = "collect") &
+  ggeasy::easy_add_legend_title("v1 > 0") #&
+  #scale_color_manual(values = c("#F8766D", "#01ADD8"))
+patch2 & ggeasy::easy_move_legend("bottom")
+
+ggsave("corn2patch_v2r.jpg", dpi = 1200, width = 4.4, height = 4.4)
+
+patch2
+
+ggsave("corn2patch_v2r_1col.jpg", dpi = 1200, width = 5.5, height = 3.3)
+```
+
+
+```{r}
+(patch | plot_spacer() | patch2) + 
+  plot_layout(widths = c(1, 0.05, 1))
+ggsave("corn2patch_both_1col1.pdf", dpi = 1600, width = 9, height = 3.5)
+
+ggsave("corn2patch_both_1col.pdf", dpi = 1200, width = 11, height = 3.3)
+
+```
+

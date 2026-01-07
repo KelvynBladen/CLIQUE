@@ -1,0 +1,298 @@
+---
+title: "local_imp_functions"
+author: "Kelvyn Bladen"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(fastDummies)
+library(caret)
+library(rpart)
+library(tidyverse)
+library(GGally)
+library(treeshap)
+library(lime)
+tuneGrid <- expand.grid(mtry = 2)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+tuneGrid = NULL
+local_grid_imp_cm <- function(formula = medv ~ ., data = Boston, 
+                              method = "rf", tuneGrid = tuneGrid, 
+                              nsim = 25, folds = 5, quantile_grid = TRUE) {
+  model_frame <- model.frame(formula, data = data)
+  x <- model_frame[, -1]
+  y <- model_frame[, 1]
+  nc <- ncol(x)
+  
+  if (is(y, "factor")) {
+    y = factor(y, labels = make.names(levels(y)))
+  }
+  
+  set.seed(123)
+  flds <- createFolds(y, k = folds, returnTrain = T)
+  set.seed(123)
+  flds0 <- createFolds(y, k = folds, list = F, returnTrain = F)
+  
+  model <- caret::train(x, y, 
+                 # formula, data = data,
+                 method = method,
+                 tuneGrid = tuneGrid,
+                 trControl = trainControl(method = "cv",
+                                          index = flds,
+                                          savePredictions = "final",
+                                          classProbs = T))
+   
+  mods = list()
+  for(k in 1:folds){
+    mods[[k]] <- caret::train(x[flds0 != k,], y[flds0 != k], 
+                 # formula, data = data,
+                 method = method,
+                 tuneGrid = model$finalModel$tuneValue,
+                 trControl = trainControl(classProbs = T))
+  }
+  
+  
+  output = list()
+  output$bestTune = model$bestTune
+  output$results = model$results
+  output$finalModel = model$finalModel
+
+  model$pred = model$pred %>% arrange(rowIndex)
+
+  x_loc <- x
+  x_loc[, ] <- 0
+
+  if (!is(y, "factor")) {
+    p = model$pred$pred
+    truth = model$pred$obs
+    m <- abs(p - truth)
+  } else {
+    yd <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
+    p = model$pred %>% dplyr::select(levels(y))
+    m <- rowMeans(abs(yd - p))
+  }
+  
+  for (i in seq_len(nc)) {
+    if(!inherits(x[,i], "numeric")){
+      # perhaps do a permutation for low level factors!!
+      # maybe convert factors to characters!!
+      grid_vals = unique(x[,i])
+    } else {
+      grid_vals = ifelse(rep(quantile_grid, nsim),
+      quantile(x[,i], probs = seq(0, 1, length = nsim)), #quantile
+      seq(min(x[,i]), max(x[,i]), length = nsim)) #uniform
+    }
+    
+    for (j in grid_vals) {
+      x_new <- x
+      x_new[, i] <- j
+
+      if (!is(y, "factor")) {
+        pr <- truth
+        for(k in 1:folds){
+          pr[flds0 == k] = predict(mods[[k]], x_new[flds0 == k,], type = "raw")
+        }
+        new_m <- abs(pr - truth)
+      } else {
+        pr <- yd
+        for(k in 1:folds){
+          pr[flds0 == k,] = predict(mods[[k]], x_new[flds0 == k,], 
+                                    type = "prob")
+        }
+        new_m <- rowMeans(abs(yd - pr))
+      }
+      x_loc[, i] <- x_loc[, i] + ((new_m - m) / nsim)
+    }
+  }
+  output$local_imp = x_loc
+  return(output)
+}
+```
+
+\newpage
+
+# Data
+
+```{r, message=FALSE, warning=FALSE}
+n <- 400 # increase higher 1000
+
+set.seed(1234)
+
+v1 = runif(n, -1, 1)
+v2 = runif(n, -1, 1)
+v3 = runif(n, -1, 1)
+v4 = runif(n, -1, 1)
+
+y = ifelse(v3 > 0, v1 + rnorm(n, sd = 0.01), v2 + rnorm(n, sd = 0.01))
+
+df <- data.frame(v1, v2, v3, v4, y)
+
+ggpairs(df)
+ggpairs(df, mapping = aes(color = v3 > 0))
+ggplot(df, aes(v1, y, colour = v3 > 0)) + geom_point(size = 2)
+# ggsave("regint_data.pdf", dpi = 1600, width = 4, height = 2.5)
+```
+
+\newpage
+# Training Local Importance
+
+```{r, warning=FALSE, message=FALSE}
+mod = randomForest::randomForest(y ~ ., df)
+
+# Shap #
+rf_unified <- treeshap::randomForest.unify(mod, df)
+rf_res <- treeshap(rf_unified, df, interactions = T)
+shap = as.data.frame(rf_res$shaps)
+
+# LIME #
+rt = caret::train(df[, 1:4], df[[5]], method = "rf")
+explanation <- lime(df[, 1:4], rt, bin_continuous = T, n_bins = 20, use_density = T)
+elim = explain(df[, 1:4], explanation, n_features = 4)
+
+#plot_explanations(elim)
+
+lime = elim %>% dplyr::select(case, feature, feature_weight) %>% 
+  pivot_wider(names_from = feature, values_from = c(feature_weight)) %>% 
+  dplyr::select(-case) %>% as.data.frame()
+# End #
+```
+
+
+\newpage
+# ICI
+
+```{r}
+library(mlbench)
+library(featureImportance)
+library(mlr)
+
+# Create a regression task
+
+task1 = mlr::makeRegrTask(data = df, target = "y")
+learner <- mlr::makeLearner("regr.randomForest")
+model <- mlr::train(learner, task1)
+
+# Compute feature importance
+ici <- featureImportance(model, data = df, target = "y", 
+                         n.feat.perm = 25,
+                         local = TRUE)
+
+# View results
+print(ici)
+
+ici$importance
+
+pi.curve = plotImportance(ici, feat = "v1", mid = "mse", 
+                          individual = FALSE, hline = TRUE)
+ici.curves = plotImportance(ici, feat = "v1", mid = "mse", 
+                            individual = TRUE, hline = FALSE)
+
+pi.curve$data = pi.curve$data |> arrange(replace.id)
+ici.curves$data = ici.curves$data |> arrange(replace.id)
+pi.curve + aes(color = v3 > 0)
+
+ici.curves + aes(color = v3 > 0)
+
+pi.curve + ici.curves + plot_layout(axes = "collect")
+
+iii = ici$importance |> 
+  pivot_wider(id_cols = c(row.id, n.feat.perm), names_from = features, 
+              values_from = mse) |>
+  group_by(row.id) |>
+  summarize(v1 = mean(v1), v2 = mean(v2), v3 = mean(v3)) |>
+  dplyr::select(!row.id)
+iii
+
+ggplot(df, aes(x = v1, y = iii$v1)) +
+  geom_point() + ylim(-0.05, 1)
+ggplot(df, aes(x = v1, y = iii$v1, color = v3 > 0)) +
+  geom_point() + ylim(-0.05, 1)
+
+
+iii = ici$importance |> 
+  pivot_wider(id_cols = c(replace.id, n.feat.perm), names_from = features, 
+              values_from = mse) |>
+  group_by(replace.id) |>
+  summarize(v1 = mean(v1), v2 = mean(v2), v3 = mean(v3)) |>
+  dplyr::select(!replace.id)
+
+ggplot(df, aes(x = v1, y = iii$v1)) +
+  geom_point() + ylim(-0.05, 1)
+
+ggplot(df, aes(x = v1, y = iii$v1, color = v3 > 0)) +
+  geom_point() + ylim(-0.05, 1)
+```
+
+\newpage
+# CV Training
+
+```{r, warning=FALSE, message=FALSE}
+tictoc::tic()
+xm = local_grid_imp_cm(formula = y ~ ., data = df,
+                       method = "rf", tuneGrid = NULL, nsim = 25,
+                       folds = 5, quantile_grid = TRUE)
+tictoc::toc()
+
+
+d1 = data.frame(v1 = df[,1],
+                CLIQUE = xm$local_imp$v1,
+                ICI = iii$v1,
+                SHAP = shap$v1, LIME = lime$v1)
+ggpairs(d1)
+ggpairs(d1, mapping = aes(color = v3 > 0))
+
+
+summary(d1$LIME)
+gi = ggplot(d1, aes(x = v1, y = ICI, color = v3 > 0)) +
+  geom_point() + 
+  scale_y_continuous(limits = c(-0.31, 1), breaks = seq(-0.25, 1, 0.25))
+gq = ggplot(d1, aes(x = v1, y = CLIQUE, color = v3 > 0)) +
+  geom_point() + 
+  scale_y_continuous(limits = c(-0.31, 1), breaks = seq(-0.25, 1, 0.25))
+gs = ggplot(d1, aes(x = v1, y = SHAP, color = v3 > 0)) +
+  geom_point() + ylim(-0.5, 0.52)
+gl = ggplot(d1, aes(x = v1, y = LIME, color = v3 > 0)) +
+  geom_point() + ylim(-0.5, 0.52)
+
+library(patchwork)
+
+gl + gs + gi + gq + 
+  plot_layout(guides = "collect", axes = "collect") &
+  ggeasy::easy_add_legend_title("v3 > 0") & ggeasy::easy_move_legend("bottom")
+
+ggsave("regint_patch.jpg", dpi = 1200, width = 4.4, height = 4.4)
+
+gl + gs + gi + gq + 
+  plot_layout(guides = "collect", axes = "collect") &
+  ggeasy::easy_add_legend_title("v3 > 0")
+
+ggsave("regint_patch_1col.pdf", dpi = 1600, width = 5.5, height = 3.3)
+
+d2 = data.frame(val2 = df[,2],
+                grid = xm$local_imp$v2,
+                shap = shap$v2, lime = lime$v2)
+ggpairs(d2)
+ggpairs(d2, mapping = aes(color = v3 > 0))
+
+d3 = data.frame(val3 = df[,3],
+                grid = xm$local_imp$v3,
+                shap = shap$v3, lime = lime$v3)
+ggpairs(d3)
+ggpairs(d3, mapping = aes(color = v3 > 0))
+
+dz = data.frame(valz = df[,4],
+                grid = xm$local_imp$v4,
+                shap = shap$v4, lime = lime$v4)
+ggpairs(dz)
+ggpairs(dz, mapping = aes(color = v3 > 0))
+```

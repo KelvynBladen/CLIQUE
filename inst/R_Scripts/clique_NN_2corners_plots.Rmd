@@ -1,0 +1,145 @@
+---
+title: "local_imp_functions"
+author: "Kelvyn Bladen"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(fastDummies)
+library(caret)
+library(rpart)
+library(tidyverse)
+library(GGally)
+library(treeshap)
+library(lime)
+library(patchwork)
+library(tictoc)
+```
+
+\newpage
+# Data
+
+```{r, message=FALSE, warning=FALSE}
+
+dfc = read.csv("dfc.csv")
+
+dfc$y = factor(dfc$y)
+dfc$z1 = factor(dfc$z1)
+dfc$z2 = factor(dfc$z2)
+
+#sup = factor(ifelse(z2 == F, 0, ifelse(z1 == F, 2, 1)))
+
+
+ggdat = ggplot(dfc, aes(v1, v2, colour = y)) + geom_point(size = 2) +
+  scale_color_manual(values = c("#2CA02C", "#9467BD"))
+ggdat
+#ggsave("corn2_dat.jpg", dpi = 800, width = 3.6, height = 2.5) 
+
+# ggplot(dfc, aes(v1, v2, colour = sup)) + geom_point(size = 2)
+# ggsave("xor2.pdf", dpi = 800, width = 4, height = 2.5)
+```
+
+\newpage
+
+# Importance
+
+```{r, warning=FALSE, message=FALSE}
+d1 = read.csv("df_v1.csv")
+d1
+
+names(d1) = c("v1", "CLIQUE", "ICI", "SHAP", "LIME", "z2")
+
+d2 = read.csv("df_v2.csv")
+d2
+
+names(d2) = c("v2", "CLIQUE", "ICI", "SHAP", "LIME", "z1")
+```
+
+
+
+```{r}
+dfc1 = dfc
+dfc1$c1 = d1$CLIQUE
+dfc1$c2 = d2$CLIQUE
+
+co = cut(abs(dfc1$v2), breaks = c(0, 0.22, 0.28, 1))
+
+
+gq = ggplot(dfc1, aes(x = v1, y = c1, color = co)) +
+  geom_point(size = 2) + ylim(-0.5, 1)
+gq
+
+dfc1$v2[abs(dfc1$v2) < 0.2 | abs(dfc1$v2) > 0.35] = NA
+hist(abs(dfc1$v2))
+
+gq = ggplot(dfc1, aes(x = v1, y = c1, color = abs(v2))) +
+  geom_point(size = 2.5) + ylim(-0.5, 1)
+gq
+plotly::ggplotly(gq) |> htmlwidgets::saveWidget("corner_clique.html")
+```
+
+
+
+
+```{r, warning=FALSE, message=FALSE}
+gq = ggplot(d1, aes(x = v1, y = CLIQUE, color = z2)) +
+  geom_point() + ylim(-0.5, 1)
+gq
+gs = ggplot(d1, aes(x = v1, y = SHAP, color = z2)) +
+  geom_point() + scale_y_continuous(limits = c(-0.53, 0.53), breaks = -2:2 * 0.25)
+gs
+gl = ggplot(d1, aes(x = v1, y = LIME, color = z2)) +
+  geom_point() + scale_y_continuous(limits = c(-0.53, 0.53), breaks = -2:2 * 0.25)
+gl
+gi = ggplot(d1, aes(x = v1, y = ICI, color = z2)) +
+  geom_point() + ylim(-0.5, 1)
+gi
+
+patch = gl + gs + gi + gq + 
+  plot_layout(guides = "collect", axes = "collect", 
+              axis_titles = "collect") &
+  ggeasy::easy_add_legend_title("|v2| > 1/4") #&
+  #scale_color_manual(values = c("#F8766D", "#01ADD8"))
+patch & ggeasy::easy_move_legend("bottom")
+
+ggsave("corn2patch_v1.jpg", dpi = 1200, width = 4.4, height = 4.4)
+```
+
+```{r, warning=FALSE, message=FALSE}
+dfc1 = dfc
+dfc1$c1 = d1$CLIQUE
+dfc1$c2 = d2$CLIQUE
+
+co = cut(abs(dfc1$v1), breaks = c(0, 0.4, 0.6, 1))
+dim(dfc)
+gq = ggplot(d2, aes(x = v2, y = CLIQUE, color = dfc$y)) +
+  geom_point(size = 2) + ylim(-0.7, 1)
+gq
+gs = ggplot(d2, aes(x = v2, y = SHAP, color = z1)) +
+  geom_point() + scale_y_continuous(limits = c(-0.53, 0.53), breaks = -2:2 * 0.25)
+gs
+gl = ggplot(d2, aes(x = v2, y = LIME, color = z1)) +
+  geom_point() + scale_y_continuous(limits = c(-0.53, 0.53), breaks = -2:2 * 0.25)
+gl
+gi = ggplot(d2, aes(x = v2, y = ICI, color = z1)) +
+  geom_point() + ylim(-0.7, 1)
+gi
+
+patch = gl + gs + gi + gq + 
+  plot_layout(guides = "collect", axes = "collect", 
+              axis_titles = "collect") &
+  ggeasy::easy_add_legend_title("v1 > 0") #&
+  #scale_color_manual(values = c("#F8766D", "#01ADD8"))
+patch & ggeasy::easy_move_legend("bottom")
+
+ggsave("corn2patch_v2.jpg", dpi = 1200, width = 4.4, height = 4.4)
+```
