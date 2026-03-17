@@ -119,6 +119,11 @@ local_grid_imp_cm <- function(formula = medv ~ ., data = Boston,
 }
 ```
 
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+source("clique.R")
+```
+
+
 \newpage
 
 # Data
@@ -139,7 +144,8 @@ df <- data.frame(v1, v2, v3, v4, y)
 
 ggpairs(df)
 ggpairs(df, mapping = aes(color = v3 > 0))
-ggplot(df, aes(v1, y, colour = v3 > 0)) + geom_point(size = 2)
+gdat = ggplot(df, aes(v1, y, colour = v3 > 0)) + geom_point(size = 2)
+gdat
 # ggsave("regint_data.pdf", dpi = 1600, width = 4, height = 2.5)
 ```
 
@@ -243,9 +249,16 @@ xm = local_grid_imp_cm(formula = y ~ ., data = df,
                        folds = 5, quantile_grid = TRUE)
 tictoc::toc()
 
+tictoc::tic()
+xg = clique(formula = y ~ ., data = df, parallel = T, cores = 5, seed = 123,
+            method = "rf", tuneGrid = NULL, 
+            nsim = 25, folds = 5, quantile_grid = TRUE)
+tictoc::toc()
+
 
 d1 = data.frame(v1 = df[,1],
-                CLIQUE = xm$local_imp$v1,
+                CLIQUE_old = xm$local_imp$v1,
+                CLIQUE = xg$local_imp$v1,
                 ICI = iii$v1,
                 SHAP = shap$v1, LIME = lime$v1)
 ggpairs(d1)
@@ -270,13 +283,24 @@ gl + gs + gi + gq +
   plot_layout(guides = "collect", axes = "collect") &
   ggeasy::easy_add_legend_title("v3 > 0") & ggeasy::easy_move_legend("bottom")
 
-ggsave("regint_patch.jpg", dpi = 1200, width = 4.4, height = 4.4)
+ggsave("inst/plots/regint_patch.jpg", dpi = 1200, width = 4.4, height = 4.4)
 
 gl + gs + gi + gq + 
   plot_layout(guides = "collect", axes = "collect") &
   ggeasy::easy_add_legend_title("v3 > 0")
 
-ggsave("regint_patch_1col.pdf", dpi = 1600, width = 5.5, height = 3.3)
+ggsave("inst/plots/regint_patch_1col.pdf", 
+       dpi = 1600, width = 5.5, height = 3.3)
+
+patc = gl + gs + gi + gq + 
+  plot_layout(guides = "collect", axes = "collect") &
+  ggeasy::easy_add_legend_title("v3 > 0")
+
+gdat + plot_spacer() + patc + 
+  plot_layout(guides = "collect", widths = c(10,0.2,12))
+
+ggsave("inst/plots/regint_all_patch_1col.pdf", 
+       dpi = 1600, width = 8.8, height = 3.3)
 
 d2 = data.frame(val2 = df[,2],
                 grid = xm$local_imp$v2,
@@ -295,4 +319,15 @@ dz = data.frame(valz = df[,4],
                 shap = shap$v4, lime = lime$v4)
 ggpairs(dz)
 ggpairs(dz, mapping = aes(color = v3 > 0))
+```
+
+
+```{r}
+sc = apply(d1, 2, FUN = function(x){max(abs(x))})
+vr = d1 |> filter(v3 < 0)
+
+mae = colMeans(abs(vr / sc))
+rmse = sqrt(colMeans((vr / sc)^2))
+mae
+rmse
 ```

@@ -48,7 +48,7 @@ ry = randomForest(LobaOreg ~ ., data = lichen, mtry = 10, importance = T)
 ry
 
 gy = randomForestVIP::ggvip(ry, num_var = 10)
-ggy = gy$accuracy_vip
+ggy = gy$accuracy_vip + theme(axis.title = element_text(size = 10))
 #ggy = gy$both_vips
 pc1 = pdp_compare(ry, var_vec = c("ACONIF", "MinTempAve"))
 pdpy = pc1$full_num + scale_y_continuous(limits = c(.13, .39),
@@ -56,10 +56,12 @@ pdpy = pc1$full_num + scale_y_continuous(limits = c(.13, .39),
   ylab("LobaOreg Predicted Probability")
 
 
-pdpy = pc1$ACONIF / pc1$MinTempAve + plot_layout(axis_titles = "collect") &
+pdpy = pc1$ACONIF + pc1$MinTempAve +
+  plot_layout(axis_titles = "collect", axes = "collect") &
   scale_y_continuous(limits = c(.13, .39),
                      breaks = c(.13, .26, .39)) & theme_bw() &
-  ylab("LobaOreg Predicted Probability")
+  ylab("LobaOreg Predicted Probability") &
+  theme(axis.title = element_text(size = 10))
 
 hist(lichen$MinTempAve)
 
@@ -70,7 +72,10 @@ t2 <- wrap_elements(panel = textGrob('Partial Dependence Plots'))
 design <- "
   AB
 "
-ggy + pdpy
+1/3
+ggy + pdpy + plot_layout(widths = c(1,2))
+
+ggsave("inst/plots/lichen_global_wide.pdf", dpi = 1600, width = 7.5, height = 2.5)
 
 ggsave("lichen_global1.pdf", dpi = 1600, width = 8, height = 6)
 ggsave("lichen_global1.pdf", dpi = 1600, width = 6, height = 3.5)
@@ -147,6 +152,15 @@ xm2 = local_grid_imp_cm(formula = LobaOreg ~ ., data = lichen,
                         folds = 5, quantile_grid = T)
 tictoc::toc()
 
+source("inst/R_Scripts/clique.R")
+tictoc::tic()
+xg2 = clique(formula = LobaOreg ~ ., data = lichen, parallel = T, cores = 5,
+             seed = 123, method = "rf", tuneGrid = tuneGrid,
+             nsim = 25, folds = 5, quantile_grid = TRUE, brier_score = T)
+tictoc::toc()
+
+boxplot(xg2$local_imp$ACONIF ~ lichen$MinTempAve > 65)
+
 pm = pdp::partial(ry, pred.var = c("MinTempAve"), prob = T, which.class = 2)
 pm
 # 62 to 107
@@ -167,9 +181,35 @@ ggpairs(dmtemp, mapping = aes(colour = lichen$LobaOreg))
 dacon = data.frame(vals = lichen$ACONIF,
                    #CLIP = pm2$local_imp$ACONIF,
                    ICI = iii$ACONIF,
-                   CLIQUE = xm2$local_imp$ACONIF,
+                   # CLIQUE = xm2$local_imp$ACONIF,
+                   CLIQUE = xg2$local_imp$ACONIF,
                    SHAP = shapy$ACONIF,
                    LIME = lime$ACONIF)
+
+dacon$MinTempAve = lichen$MinTempAve > 65
+
+dacon1 = dacon |> mutate(CLIQUE = CLIQUE / max(abs(CLIQUE)),
+                       SHAP = SHAP / max(abs(SHAP)),
+                       LIME = LIME / max(abs(LIME)),
+                       ICI = ICI / max(abs(ICI)))
+
+
+
+dacon1 = dacon1 |> pivot_longer(cols = 2:5)
+dacon1$name = factor(dacon1$name, levels = c("LIME", "SHAP", "ICI", "CLIQUE"))
+
+
+ggplot(dacon1, aes(x = MinTempAve, y = value)) +
+  geom_boxplot(coef = 10) +
+  #geom_blank(data = blank_data, aes(x = x, y = y)) + # Add the blank data
+  facet_wrap(~ name, nrow = 1, scales = "fixed") +
+  scale_y_continuous(limits = c(-1, 1)) +
+  expand_limits(y = 0) +
+  labs(x = "MinTempAve > 65 degrees",
+       y = "Scaled ACONIF Importance Values ")
+
+ggsave("inst/plots/lichen_aconif_wide1.pdf", dpi = 1600, width = 8, height = 2.6)
+
 ggpairs(dacon, mapping = aes(colour = lichen$LobaOreg))
 ggpairs(dacon, mapping = aes(colour = MinTempAve > 65))
 
@@ -213,14 +253,14 @@ ggplot(dacon, aes(MinTempAve > 165, CLIQUE, colour = lichen$LobaOreg)) +
 
 
 dc = dacon %>% group_by(lichen$MinTempAve > 65) %>%
-  summarise(perm_mean = mean(CLIP),
-            perm_abs_mean = mean(abs(CLIP)),
-            loc_mean = mean(local),
-            loc_abs_mean = mean(abs(local)),
+  summarise(#perm_mean = mean(CLIP),
+            #perm_abs_mean = mean(abs(CLIP)),
+            clique_mean = mean(CLIQUE),
+            clique_abs_mean = mean(abs(CLIQUE)),
             shap_abs_mean = mean(abs(SHAP)),
             lime_abs_mean = mean(abs(LIME)))
 
-dcf = data.frame(t(dc)[2:7,])
+dcf = data.frame(t(dc)[2:5,])
 colnames(dcf) = c("MinTempAve < 65", "MinTempAve > 65")
 dcf$Ratio = dcf$`MinTempAve > 65` / dcf$`MinTempAve < 65`
 dcf = round(dcf, 4)

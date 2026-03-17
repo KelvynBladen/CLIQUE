@@ -30,7 +30,7 @@ library(tictoc)
 
 ```{r, message=FALSE, warning=FALSE}
 
-dfc = read.csv("dfc_r.csv")
+dfc = read.csv("inst/NN results/dfc_r.csv")
 
 dfc$y = factor(dfc$y)
 dfc$z1 = factor(dfc$z1)
@@ -54,17 +54,37 @@ ggsave("corn2_dat1.pdf", dpi = 1600, width = 4, height = 2.5)
 # Importance
 
 ```{r, warning=FALSE, message=FALSE}
-d1 = read.csv("df_v1_r.csv")
+d1 = read.csv("inst/NN results/df_v1_r.csv")
 d1
 
 names(d1) = c("v1", "CLIQUE", "ICI", "SHAP", "LIME", "z2")
 
-d2 = read.csv("df_v2_r.csv")
+d2 = read.csv("inst/NN results/df_v2_r.csv")
 d2
 
 names(d2) = c("v2", "CLIQUE", "ICI", "SHAP", "LIME", "z1")
 ```
 
+
+```{r}
+sc = apply(d1[,-6], 2, FUN = function(x){max(abs(x))})
+vr = d1 |> filter(z2 == "False") |> select(!z2)
+
+mae1 = colMeans(abs(vr / sc))
+rmse1 = sqrt(colMeans((vr / sc)^2))
+mae1
+rmse1
+```
+
+```{r}
+sc = apply(d2[,-6], 2, FUN = function(x){max(abs(x))})
+vr = d2 |> filter(z1 == "False") |> select(!z1)
+
+mae2 = colMeans(abs(vr / sc))
+rmse2 = sqrt(colMeans((vr / sc)^2))
+mae2
+rmse2
+```
 
 ```{r, warning=FALSE, message=FALSE}
 gq = ggplot(d1, aes(x = v1, y = CLIQUE, color = z2)) +

@@ -1,0 +1,1684 @@
+---
+title: "local_imp_functions"
+author: "Kelvyn Bladen"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(fastDummies)
+library(caret)
+library(rpart)
+library(tidyverse)
+library(GGally)
+library(randomForest)
+library(treeshap)
+library(lime)
+library(patchwork)
+library(tictoc)
+library(doParallel)
+library(future)
+library(future.apply)
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+tuneGrid = NULL
+local_perm_imp_cm <- function(formula = medv ~ ., data = Boston, 
+                              method = "ranger", tuneGrid = tuneGrid, 
+                              nsim = 25, folds = 5) {
+  model_frame <- model.frame(formula, data = data)
+  x <- model_frame[, -1]
+  y <- model_frame[, 1]
+  nc <- ncol(x)
+  nr <- nrow(x)
+  
+  if (is(y, "factor")) {
+    y = factor(y, labels = make.names(levels(y)))
+  }
+  
+  set.seed(123)
+  flds <- createFolds(y, k = folds, returnTrain = T)
+  set.seed(123)
+  flds0 <- createFolds(y, k = folds, list = F, returnTrain = F)
+  
+  model <- train(x, y, 
+                 # formula, data = data,
+                 method = method,
+                 tuneGrid = tuneGrid,
+                 trControl = trainControl(method = "cv",
+                                          index = flds,
+                                          savePredictions = "final",
+                                          classProbs = T))
+  
+  mods = list()
+  for(i in 1:folds){
+    mods[[i]] <- train(x[flds0 != i,], y[flds0 != i], 
+                 # formula, data = data,
+                 method = method,
+                 tuneGrid = model$finalModel$tuneValue,
+                 trControl = trainControl(method = "none", classProbs = T))
+  }
+  
+  
+  output = list()
+  output$bestTune = model$bestTune
+  output$results = model$results
+  output$finalModel = model$finalModel
+
+  model$pred = model$pred %>% arrange(rowIndex)
+
+  x_loc <- x
+  x_loc[, ] <- 0
+  x_temp <- x_loc
+
+  if (!is(y, "factor")) {
+    p = model$pred$pred
+    truth = model$pred$obs
+    m <- (truth - p)^2
+  } else {
+    truth <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
+    p = model$pred %>% dplyr::select(levels(y))
+    m <- rowMeans((truth - p)^2)
+  }
+
+  for (j in seq_len(nsim)) {
+    for (i in seq_len(nc)) {
+      x_new <- x
+      x_new[, i] <- x[sample(1:nr), i]
+
+      if (!is(y, "factor")) {
+        pr <- truth
+        for(k in 1:folds){
+          pr[flds0 == k] = predict(mods[[k]], x_new[flds0 == k,], type = "raw")
+        }
+        new_m <- (truth - pr)^2
+      } else {
+        pr <- truth
+        for(k in 1:folds){
+          pr[flds0 == k,] = predict(mods[[k]], x_new[flds0 == k,], 
+                                    type = "prob")
+        }
+        new_m <- rowMeans((truth - pr)^2)
+      }
+      x_temp[, i] <- new_m - m
+    }
+    x_loc <- x_loc + x_temp / nsim
+  }
+  output$local_imp = x_loc
+  return(output)
+}
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+tuneGrid = NULL
+local_grid_imp_cm <- function(formula = medv ~ ., data = Boston, 
+                              method = "rf", tuneGrid = tuneGrid, 
+                              nsim = 25, folds = 5, quantile_grid = TRUE) {
+  model_frame <- model.frame(formula, data = data)
+  x <- model_frame[, -1]
+  y <- model_frame[, 1]
+  nc <- ncol(x)
+  
+  if (is(y, "factor")) {
+    y = factor(y, labels = make.names(levels(y)))
+  }
+  
+  set.seed(123)
+  flds <- createFolds(y, k = folds, returnTrain = T)
+  set.seed(123)
+  flds0 <- createFolds(y, k = folds, list = F, returnTrain = F)
+  
+  model <- train(x, y, 
+                 # formula, data = data,
+                 method = method,
+                 tuneGrid = tuneGrid,
+                 trControl = trainControl(method = "cv",
+                                          index = flds,
+                                          savePredictions = "final",
+                                          classProbs = T))
+  
+  mods = vector("list", 5)
+  for(k in 1:folds){
+    mods[[k]] <- train(x[flds0 != k,], y[flds0 != k],
+                 # formula, data = data,
+                 method = method,
+                 tuneGrid = model$finalModel$tuneValue,
+                 trControl = trainControl(method = "none", classProbs = T))
+  }
+  
+  output = list()
+  output$bestTune = model$bestTune
+  output$results = model$results
+  output$finalModel = model$finalModel
+
+  model$pred = model$pred %>% arrange(rowIndex)
+
+  x_loc <- x
+  x_loc[, ] <- 0
+
+  if (!is(y, "factor")) {
+    truth = model$pred$obs
+    p = model$pred$pred
+    m <- (truth - p)^2
+  } else {
+    truth <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
+    p = model$pred %>% dplyr::select(levels(y))
+    m <- rowMeans((truth - p)^2)
+  }
+  
+  for (i in seq_len(nc)) {
+    #if(!inherits(x[,i], "numeric")){
+    if(!is.numeric(x[,i])){  
+      # perhaps do a permutation for factors!
+      # maybe convert factors to characters!
+      grid_v = round(nsim * table(y) / length(y))
+      gd = min(pracma::gcd(grid_v[1], grid_v))
+      grid_vals = (grid_v / gd) |> as.data.frame() |> uncount(Freq) |> pull(1)
+      
+      #grid_vals = unique(x[,i])
+    } else {
+      grid_vals = ifelse(rep(quantile_grid, nsim),
+      quantile(x[,i], probs = seq(0, 1, length = nsim)), #quantile
+      seq(min(x[,i]), max(x[,i]), length = nsim)) #uniform
+    }
+    
+    for (j in grid_vals) {
+      x_new <- x
+      x_new[, i] <- j
+
+      pr <- as.data.frame(truth)
+      
+      typ = ifelse(!is(y, "factor"), "raw", "prob")
+      
+      for(k in 1:folds){
+        pr[flds0 == k,] = predict(mods[[k]], x_new[flds0 == k,], type = typ)
+      }
+      
+      new_m <- rowMeans((truth - pr)^2)
+      
+      x_loc[, i] <- x_loc[, i] + ((new_m - m) / length(grid_vals))
+    }
+    
+  }
+  output$local_imp = x_loc
+  return(output)
+}
+```
+
+```{r}
+library(furrr)
+library(doParallel)
+library(microbenchmark)
+
+# Example task
+task <- function(i) {
+  Sys.sleep(0.01)  # Simulate a time-consuming task
+  i^2
+}
+
+# Using furrr
+plan(multisession, workers = 4)
+future_time <- microbenchmark(
+  furrr = future_map(1:100, task),
+  times = 5
+)
+
+plan(multisession, workers = 4)
+tic()
+furr1 = future_map_dfc(1:3, task)
+toc()
+furr1
+
+tic()
+for(i in 1:36){
+  x_loc[, i] = task(i)
+}
+toc()
+
+library(future.apply)
+?future_sapply()
+tic()
+xl = future_sapply(1:36, function(x) task(x))
+toc()
+xl
+
+# Using foreach
+tic()
+cl <- makeCluster(4)
+registerDoParallel(cl)
+# foreach_time <- microbenchmark(
+#   foreach = foreach(i = 1:100, .combine = c) %dopar% task(i),
+#   times = 5
+# )
+foreach1 = foreach(i = 1:3, .combine = cbind) %dopar% task(i)
+stopCluster(cl)
+toc()
+
+
+?foreach()
+print(future_time)
+print(foreach_time)
+
+```
+
+
+```{r, eval=FALSE, echo=FALSE}
+unregister_dopar <- function() {
+  env <- foreach:::.foreachGlobals
+  rm(list=ls(name=env), pos=env)
+}
+unregister_dopar()
+
+task <- function(i, x, truth, nsim, mods, flds0, m) {
+  xi = x[,i]
+    if(!is.numeric(xi)){
+      grid_v = round(nsim * table(xi) / length(xi))
+      gd = min(pracma::gcd(grid_v[1], grid_v))
+      grid_vals = (grid_v / gd) |> as.data.frame() |> uncount(Freq) |> pull(1)
+      #grid_vals = unique(xi)
+    } else {
+      grid_vals = ifelse(rep(quantile_grid, nsim),
+      quantile(xi, probs = seq(0, 1, length = nsim)), #quantile
+      seq(min(xi), max(xi), length = nsim)) #uniform
+    }
+    
+  # descrepencies between prior CLIQUE and this may 
+  # lie in using length(grid_vals) instead of nsim
+    truth_rep <- do.call(rbind, replicate(length(grid_vals), 
+                                          truth, simplify = FALSE))
+    pr = truth_rep
+    grid_vals_vec <- rep(grid_vals, each = nrow(x))
+    x_new_rep <- do.call(rbind, replicate(length(grid_vals), 
+                                          x, simplify = FALSE))
+    x_new_rep[, i] <- grid_vals_vec
+    flds1 = rep(flds0, times = length(grid_vals))
+    
+    for(k in 1:folds){
+      pr[flds1 == k,] = predict(mods[[k]], x_new_rep[flds1 == k,], type = typ)
+    }    
+      
+    new_m <- rowMeans((truth_rep - pr)^2)
+    new_m_vec = matrix(new_m, ncol = length(grid_vals)) %>% rowMeans()
+    new_m_vec - m
+}
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+tuneGrid = NULL
+local_grid_imp_cm2 <- function(formula = medv ~ ., data = Boston, 
+                              method = "rf", tuneGrid = tuneGrid, 
+                              parallel = T, cores = 5,
+                              nsim = 25, folds = 5, quantile_grid = TRUE) {
+  model_frame <- model.frame(formula, data = data)
+  x <- model_frame[, -1]
+  y <- model_frame[, 1]
+  nc <- ncol(x)
+  
+  x_loc <- x
+  x_loc[, ] <- 0
+  
+  if (is(y, "factor")) {
+    y = factor(y, labels = make.names(levels(y)))
+  }
+  
+  set.seed(123)
+  flds <- createFolds(y, k = folds, returnTrain = T)
+  set.seed(123)
+  flds0 <- createFolds(y, k = folds, list = F, returnTrain = F)
+  
+  #tic()
+  if(parallel){
+    cl <- makeCluster(cores)
+    doParallel::registerDoParallel(cl)
+  } 
+  
+  model <- train(x, y, 
+                   # formula, data = data,
+                 method = method,
+                 tuneGrid = tuneGrid,
+                 trControl = trainControl(method = "cv",
+                                          index = flds,
+                                          savePredictions = "final",
+                                          classProbs = T))
+  
+  mods = vector("list", 5)
+  for(k in 1:folds){
+    mods[[k]] <- train(x[flds0 != k,], y[flds0 != k],
+                 # formula, data = data,
+                 method = method,
+                 tuneGrid = model$finalModel$tuneValue,
+                 trControl = trainControl(method = "none", classProbs = T))
+  }
+
+  if(parallel){
+    stopCluster(cl)
+    unregister_dopar()
+  }
+  #toc()
+
+  model$pred = model$pred %>% arrange(rowIndex)
+
+  if (!is(y, "factor")) {
+    truth = model$pred$obs
+    p = model$pred$pred
+    m <- (truth - p)^2
+  } else {
+    truth <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
+    p = model$pred %>% dplyr::select(levels(y))
+    m <- rowMeans((truth - p)^2)
+  }
+  
+  typ = ifelse(!is(y, "factor"), "raw", "prob")
+  pr <- as.data.frame(truth)
+  
+  x_loc = future_sapply(seq_len(nc), 
+                        function(i) task(i, x = x, truth = truth,
+                                         nsim = nsim, mods = mods, 
+                                         flds0 = flds0, m = m)) %>% 
+    as.data.frame()
+  colnames(x_loc) = colnames(x)
+  
+  # for (i in seq_len(nc)) {
+  #   xi = x[,i]
+  #   if(!is.numeric(xi)){
+  #     grid_v = round(nsim * table(xi) / length(xi))
+  #     gd = min(pracma::gcd(grid_v[1], grid_v))
+  #     grid_vals = (grid_v / gd) |> as.data.frame() |> uncount(Freq) |> pull(1)
+  #     #grid_vals = unique(xi)
+  #   } else {
+  #     grid_vals = ifelse(rep(quantile_grid, nsim),
+  #     quantile(xi, probs = seq(0, 1, length = nsim)), #quantile
+  #     seq(min(xi), max(xi), length = nsim)) #uniform
+  #   }
+  #   
+  #   truth_rep <- do.call(rbind, replicate(length(grid_vals), 
+  #                                         truth, simplify = FALSE))
+  #   pr = truth_rep
+  #   grid_vals_vec <- rep(grid_vals, each = nrow(x))
+  #   x_new_rep <- do.call(rbind, replicate(length(grid_vals), 
+  #                                         x, simplify = FALSE))
+  #   x_new_rep[, i] <- grid_vals_vec
+  #   flds1 = rep(flds0, times = length(grid_vals))
+  #   
+  #   x_new_rep
+  #   for(k in 1:folds){
+  #     pr[flds1 == k,] = predict(mods[[k]], x_new_rep[flds1 == k,], type = typ)
+  #   }    
+  #     
+  #   new_m <- rowMeans((truth_rep - pr)^2)
+  #   new_m_vec = matrix(new_m, ncol = length(grid_vals)) %>% rowMeans()
+  #   x_loc[, i] <- new_m_vec - m
+  #   
+  # }
+  
+  output = list()
+  output$bestTune = model$bestTune
+  output$results = model$results
+  output$finalModel = model$finalModel
+  output$local_imp = x_loc
+  return(output)
+}
+```
+
+
+```{r, eval=FALSE, echo=FALSE}
+unregister_dopar <- function() {
+  env <- foreach:::.foreachGlobals
+  rm(list=ls(name=env), pos=env)
+}
+unregister_dopar()
+
+task1 <- function(ii, x, truth, nsim, mods, flds0, m, typ, pr) {
+  xi = x[,ii]
+  if(!is.numeric(xi)){  
+    grid_v = round(nsim * table(y) / length(y))
+    gd = min(pracma::gcd(grid_v[1], grid_v))
+    grid_vals = (grid_v / gd) |> as.data.frame() |> uncount(Freq) |> pull(1)
+  } else {
+    grid_vals = ifelse(rep(quantile_grid, nsim),
+    quantile(xi, probs = seq(0, 1, length = nsim)), #quantile
+    seq(min(xi), max(xi), length = nsim)) #uniform
+  }
+  
+  new_m_mat <- sapply(1:length(grid_vals), function(jj){
+    x_new <- x
+    x_new[, ii] <- grid_vals[jj]
+
+    for(k in 1:folds){
+      pr[flds0 == k,] = predict(mods[[k]], x_new[flds0 == k,], type = typ)
+    }
+    
+    rowMeans((truth - pr)^2)
+  })
+  
+  new_m_vec = new_m_mat %>% rowMeans()
+  new_m_vec - m
+}
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+tuneGrid = NULL
+local_grid_imp_cm3 <- function(formula = medv ~ ., data = Boston, 
+                              method = "rf", tuneGrid = tuneGrid, 
+                              parallel = T, cores = 5,
+                              nsim = 25, folds = 5, quantile_grid = TRUE) {
+  model_frame <- model.frame(formula, data = data)
+  x <- model_frame[, -1]
+  y <- model_frame[, 1]
+  nc <- ncol(x)
+  
+  # x_loc <- x
+  # x_loc[, ] <- 0
+  
+  if (is(y, "factor")) {
+    y = factor(y, labels = make.names(levels(y)))
+  }
+  
+  set.seed(123)
+  flds <- createFolds(y, k = folds, returnTrain = T)
+  set.seed(123)
+  flds0 <- createFolds(y, k = folds, list = F, returnTrain = F)
+  
+  #tic()
+  if(parallel){
+    cl <- makeCluster(cores)
+    doParallel::registerDoParallel(cl)
+  } 
+  
+  model <- train(x, y, 
+                   # formula, data = data,
+                 method = method,
+                 tuneGrid = tuneGrid,
+                 trControl = trainControl(method = "cv",
+                                          index = flds,
+                                          savePredictions = "final",
+                                          classProbs = T))
+  
+  mods = vector("list", 5)
+  for(k in 1:folds){
+    mods[[k]] <- train(x[flds0 != k,], y[flds0 != k],
+                 # formula, data = data,
+                 method = method,
+                 tuneGrid = model$finalModel$tuneValue,
+                 trControl = trainControl(method = "none", classProbs = T))
+  }
+
+  if(parallel){
+    stopCluster(cl)
+    unregister_dopar()
+  }
+  #toc()
+
+  model$pred = model$pred %>% arrange(rowIndex)
+
+  if (!is(y, "factor")) {
+    truth = model$pred$obs
+    p = model$pred$pred
+    m <- (truth - p)^2
+  } else {
+    truth <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
+    p = model$pred %>% dplyr::select(levels(y))
+    m <- rowMeans((truth - p)^2)
+  }
+  
+  typ = ifelse(!is(y, "factor"), "raw", "prob")
+  pr <- as.data.frame(truth)
+  
+  x_loc = future_sapply(seq_len(nc), 
+                        function(ii) task1(ii, x = x, truth = truth,
+                                         nsim = nsim, mods = mods, 
+                                         flds0 = flds0, m = m,
+                                         typ = typ, pr = pr)) %>% 
+    as.data.frame()
+  colnames(x_loc) = colnames(x)
+  
+  output = list()
+  output$bestTune = model$bestTune
+  output$results = model$results
+  output$finalModel = model$finalModel
+  output$local_imp = x_loc
+  return(output)
+}
+```
+
+
+```{r}
+# Helper function for training models with cross-validation
+train_models <- function(x, y, folds, flds0, method, tuneGrid) {
+  models <- vector("list", length(folds))
+  for (k in seq_len(folds)) {
+    models[[k]] <- train(
+      x[flds0 != k, ], y[flds0 != k],
+      method = method,
+      tuneGrid = tuneGrid,
+      trControl = trainControl(method = "none", classProbs = TRUE)
+    )
+  }
+  return(models)
+}
+
+task2 <- function(ii, x, truth, nsim, mods, flds0, m, typ, 
+                  quantile_grid, predictions) {
+  # Helper function to generate grid values
+  generate_grid_values <- function(xi, nsim, quantile_grid) {
+    if (!is.numeric(xi)) {
+      grid_v <- round(nsim * table(y) / length(y))
+      gd <- min(pracma::gcd(grid_v[1], grid_v))
+      grid_vals <- (grid_v / gd) |> as.data.frame() |> uncount(Freq) |> pull(1)
+    } else {
+      grid_vals <- if (quantile_grid) {
+        quantile(xi, probs = seq(0, 1, length = nsim)) # Quantile-based grid
+      } else {
+        seq(min(xi), max(xi), length = nsim) # Uniform grid
+      }
+    }
+    grid_vals
+  }
+  
+  # Generate grid values for the selected variable
+  grid_vals <- generate_grid_values(x[, ii], nsim, quantile_grid)
+  
+  # Update predictions and calculate errors
+  calculate_new_m <- function(grid_val, x, ii, mods, flds0, truth, typ, 
+                              predictions) {
+    x_new <- x
+    x_new[, ii] <- grid_val
+    
+    for (k in seq_along(mods)) {
+      predictions[flds0 == k,] = predict(mods[[k]], x_new[flds0 == k,], 
+                                         type = typ)
+    }
+    
+    # Calculate the row-wise mean squared error
+    rowMeans((truth - predictions)^2)
+  }
+  
+  # Apply over all grid values
+  new_m_mat <- sapply(grid_vals, calculate_new_m, x = x, ii = ii, 
+                      mods = mods, flds0 = flds0, truth = truth, typ = typ,
+                      predictions = predictions)
+  
+  # Calculate the mean error for each observation and adjust by baseline errors
+  rowMeans(new_m_mat) - m
+}
+
+# Main function
+local_grid_imp_cm4 <- function(formula = medv ~ ., data = Boston,
+                               method = "rf", tuneGrid = tuneGrid,
+                               parallel = TRUE, cores = 5, seed = 123,
+                               nsim = 25, folds = 5, quantile_grid = TRUE) {
+  # Set up the data
+  model_frame <- model.frame(formula, data = data)
+  x <- model_frame[, -1]
+  y <- model_frame[, 1]
+  if (is.factor(y)) {
+    y <- factor(y, labels = make.names(levels(y)))
+  }
+  
+  # Set up cross-validation folds
+  set.seed(seed)
+  flds <- createFolds(y, k = folds, returnTrain = TRUE)
+  set.seed(seed)
+  flds0 <- createFolds(y, k = folds, list = FALSE, returnTrain = FALSE)
+  
+  # Train the global model
+  global_model <- caret::train(
+    x, y,
+    method = method,
+    tuneGrid = tuneGrid,
+    trControl = trainControl(
+      method = "cv",
+      index = flds,
+      savePredictions = "final",
+      classProbs = TRUE
+    )
+  )
+  
+  # Train models for each fold
+  mods <- train_models(x, y, folds, flds0, method, 
+                       global_model$finalModel$tuneValue)
+  
+  # Parallel setup
+  if (parallel) {
+    cl <- makeCluster(cores)
+    doParallel::registerDoParallel(cl)
+    on.exit({
+      stopCluster(cl)
+      unregister_dopar()
+    })
+  }
+  
+  global_model$pred = global_model$pred %>% arrange(rowIndex)
+  
+  # Calculate errors
+  if (!is.factor(y)) {
+    truth <- global_model$pred$obs
+    predictions <- global_model$pred$pred
+    m <- (truth - predictions)^2
+  } else {
+    truth <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
+    predictions <- global_model$pred %>% dplyr::select(levels(y))
+    m <- rowMeans((truth - predictions)^2)
+  }
+  
+  # Task function for parallel computation
+  x_loc <- future_lapply(
+    seq_len(ncol(x)),
+    function(ii) {
+      task2(ii, x = x, truth = truth, nsim = nsim, mods = mods,
+            flds0 = flds0, m = m, typ = ifelse(!is.factor(y), "raw", "prob"),
+            quantile_grid = quantile_grid, predictions = predictions)
+    }
+  ) %>% as.data.frame()
+  colnames(x_loc) <- colnames(x)
+  
+  # Output
+  list(
+    bestTune = global_model$bestTune,
+    results = global_model$results,
+    finalModel = global_model$finalModel,
+    local_imp = x_loc
+  )
+}
+```
+
+
+```{r, eval=FALSE, echo=FALSE}
+library(future.apply)
+
+# Define a computationally intensive task
+heavy_computation <- function(x) {
+  result <- 0
+  for (i in 1:1e6) {
+    result <- result + sum((matrix(runif(100), 10, 10) %*% matrix(runif(100), 10, 10)))
+  }
+  return(result)
+}
+
+# Input data
+input <- 1:8  # Tasks to be processed
+
+# Sequential lapply (single-threaded)
+system.time({
+  sequential_results <- lapply(input, heavy_computation)
+})
+
+# Parallel future_lapply
+plan(multisession, workers = 4)  # Use 4 cores
+system.time({
+  parallel_results <- future_lapply(input, heavy_computation)
+})
+
+```
+
+
+```{r, eval=FALSE, echo=FALSE}
+library(future.apply)
+
+?future.apply::future_lapply()
+?plan()
+plan("future::multisession", workers = 4)
+
+system.time({
+  res <- future_lapply(1:10, function(x) {
+    Sys.sleep(0.1)  # Simulate computation
+    x^2
+  })
+})
+
+plan(sequential)
+
+system.time({
+  res <- lapply(1:10, function(x) {
+    Sys.sleep(0.1)  # Simulate computation
+    x^2
+  })
+})
+
+
+cl <- makeCluster(5)
+
+# Export required objects to the cluster
+clusterExport(cl, varlist = c("x", "flds0", "mods", "y", "m", "nsim", "yd", "folds", "i"))
+
+# Parallelized grid search
+x_loc[, i] <- rowSums(parLapply(cl, grid_vals, function(j) {
+  x_new <- x
+  x_new[, i] <- j
+
+  if (!is(y, "factor")) {
+    pr <- numeric(length(yd))
+    pr <- unlist(lapply(1:folds, function(k) {
+      predict(mods[[k]], x_new[flds0 == k, ], type = "raw")
+    }))
+    new_m <- (pr - yd)^2
+  } else {
+    pr <- matrix(0, nrow = nrow(yd), ncol = ncol(yd))
+    pr <- do.call(rbind, lapply(1:folds, function(k) {
+      predict(mods[[k]], x_new[flds0 == k, ], type = "prob")
+    }))
+    new_m <- rowMeans((yd - pr)^2)
+  }
+
+  ((new_m - m) / nsim)
+}))
+
+# Stop the cluster
+stopCluster(cl)
+```
+
+
+\newpage
+# Data
+
+```{r, message=FALSE, warning=FALSE}
+mnist = read.csv("mnist38.csv")
+
+
+mnist1 = mnist[sample(1:nrow(mnist), 200),]
+```
+
+\newpage
+# Training Local Importance
+
+```{r, warning=FALSE, message=FALSE}
+set.seed(421)
+
+tic()
+rt = caret::train(mnist1[,-65], factor(mnist1$y), method = "rf")
+# Shap #
+rf_unified <- treeshap::randomForest.unify(rt$finalModel, mnist1)
+rf_res <- treeshap::treeshap(rf_unified, mnist1)
+shap = as.data.frame(rf_res$shaps)
+toc()
+dim(shap)
+
+# LIME #
+library(lime)
+tic()
+rt = caret::train(mnist1[,-65], factor(mnist1$y), method = "rf")
+explanation <- lime(mnist1[,-65], rt, bin_continuous = T, n_bins = 20, use_density = T)
+elim = explain(mnist1[,-65], explanation, n_features = 64, labels = "8")
+lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+  pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+  dplyr::select(-case) %>% as.data.frame()
+toc()
+
+
+tic()
+xg = local_grid_imp_cm(formula = factor(y) ~ ., data = mnist1, 
+                       method = "rf", tuneGrid = NULL, nsim = 25,
+                       folds = 5, quantile_grid = TRUE)
+toc()
+```
+
+\newpage
+# CV Training
+
+```{r, warning=FALSE, message=FALSE}
+d1 = data.frame(v1 = mnist1[,1],
+                CLIQUE = xg$local_imp$V1,
+                SHAP = shap$V1, LIME = lime$V1)
+
+ggpairs(d1, mapping = aes(color = factor(mnist1$y)))
+
+ggpairs(d1)
+
+gq = ggplot(d1, aes(x = v1, y = CLIQUE, color = v2)) +
+  geom_point() + ylim(-0.5, 1)
+gp = ggplot(d1, aes(x = v1, y = CLIP, color = v2)) +
+  geom_point() + ylim(-0.5, 1)
+gs = ggplot(d1, aes(x = v1, y = SHAP, color = v2)) +
+  geom_point() + ylim(-0.65, 0.65)
+gl = ggplot(d1, aes(x = v1, y = LIME, color = v2)) +
+  geom_point() + ylim(-0.65, 0.65)
+
+#library(patchwork)
+
+gl + gs + gp + gq + 
+  plot_layout(guides = "collect", axis_titles = "collect") &
+  ggeasy::easy_add_legend_title("v2")
+
+#ggsave("xor2patch.pdf", dpi = 1600, width = 6.3, height = 4.5)
+
+
+# ggpairs(d1, mapping = aes(color = 1:404 < 401))
+
+# d2 = data.frame(v = dfc[,2], perm = xl$local_imp$v2,
+#                 grid = xg$local_imp$v2,
+#                 shap = shap$v2, lime = lime$v2)
+# ggpairs(d2, mapping = aes(color = dfc$y))
+# ggpairs(d2, mapping = aes(color = 1:404 < 401))
+
+d3 = data.frame(v = dfc[,3], #perm = xl$local_imp$v3,
+                grid = xg$local_imp$v3,
+                shap = shap$v3, lime = lime$v3)
+
+# ggpairs(d3, mapping = aes(color = 1:404 < 401))
+```
+
+\newpage
+# Sim N
+
+```{r, warning=FALSE, message=FALSE}
+tuneGrid <- expand.grid(mtry = 20)
+
+mm = vector("list", 5)
+
+stimes = vector(length = 5)
+ltimes = vector(length = 5)
+qtimes = vector(length = 5)
+
+for(i in 1:5){
+  temp_df = mnist[sample(1:nrow(mnist), nrow(mnist)*i/200), ]
+  
+  s = Sys.time()
+  rt = caret::train(temp_df[,-37], factor(temp_df$y), method = "rf",
+                    tuneGrid = tuneGrid)
+  m_time = as.numeric(Sys.time() - s, units = "secs")
+  
+  s = Sys.time()
+  rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
+  rf_res <- treeshap::treeshap(rf_unified, temp_df)
+  shap = as.data.frame(rf_res$shaps)
+  stimes[i] = as.numeric(Sys.time() - s, units = "secs") + m_time
+  
+  s = Sys.time()
+  explanation <- lime(temp_df[,-37], rt, bin_continuous = T, n_bins = 10, 
+                      use_density = T)
+  
+  elim = explain(temp_df[,-37], explanation, n_features = 36, labels = "8")
+  
+  lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+    pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+    dplyr::select(-case) %>% as.data.frame()
+  ltimes[i] = as.numeric(Sys.time() - s, units = "secs") + m_time
+  
+  s = Sys.time()
+  xg = local_grid_imp_cm(formula = factor(y) ~ .,
+                         data = temp_df,
+                         method = "rf", tuneGrid = tuneGrid, 
+                         nsim = 50, folds = 5, quantile_grid = T)
+  qtimes[i] = as.numeric(Sys.time() - s, units = "secs")
+  
+  l = data.frame(v1 = temp_df$x3y3,
+                 CLIQUE = xg$local_imp$x3y3,
+                 SHAP = shap$x3y3, LIME = lime$x3y3)
+  
+  l$n = i
+  mm[[i]] = l
+  
+  print(i)
+}
+
+dat = data.frame(prop = 1:5 / 200, 
+                 CLIQUE = qtimes, SHAP = stimes, LIME = ltimes)
+dat = dat %>% pivot_longer(cols = 2:4, values_to = "time")
+
+ggplot(dat, aes(x = prop, y = time, colour = name, group = name)) + 
+  geom_point() + 
+  geom_line() #+
+  #scale_x_continuous(limits = c(-0.1, 1.1)) +
+  #scale_y_continuous(limits = c(0, 3), breaks = c(0, 1, 2, 3))
+
+mmm = rbind(mm[[1]], mm[[2]], mm[[3]], mm[[4]], mm[[5]])
+
+ggplot(mmm, aes(x = n, y = CLIQUE)) + 
+  geom_point(position = position_jitter(width = 0.2))# +
+  # scale_x_continuous(breaks = 0:5*40, limits = c(0, 201)) +
+  # scale_y_continuous(limits = c(-0.2, 1.05), breaks = -1:5 / 5)
+```
+
+\newpage
+# Sim P
+
+```{r, warning=FALSE, message=FALSE}
+mp = vector("list", 6)
+
+stimesp = vector(length = 6)
+ltimesp = vector(length = 6)
+qtimesp = vector(length = 6)
+qtimesp2 = vector(length = 6)
+
+ind = sample(1:nrow(mnist), 50)
+
+for(i in 1:3){
+  temp_df = mnist[ind, c(15, sample(c(1:14, 16:36), i*6 - 1), 37)]
+  
+  s = Sys.time()
+  rt = caret::train(temp_df[,-ncol(temp_df)], factor(temp_df$y), method = "rf",
+                    tuneGrid = expand.grid(mtry = 3*i))
+  m_time = as.numeric(Sys.time() - s, units = "secs")
+  
+  s = Sys.time()
+  rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
+  rf_res <- treeshap::treeshap(rf_unified, temp_df)
+  shap = as.data.frame(rf_res$shaps)
+  stimesp[i] = as.numeric(Sys.time() - s, units = "secs") + m_time
+  
+  s = Sys.time()
+  explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T, 
+                      n_bins = 10, use_density = T)
+  elim = explain(temp_df[,-ncol(temp_df)], explanation, 
+                 n_features = ncol(temp_df)-1, labels = "8")
+  lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+    pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+    dplyr::select(-case) %>% as.data.frame()
+  ltimesp[i] = as.numeric(Sys.time() - s, units = "secs") + m_time
+  
+  s = Sys.time()
+  xg = local_grid_imp_cm(formula = factor(y) ~ .,
+                         data = temp_df,
+                         method = "rf", tuneGrid = expand.grid(mtry = 3*i), 
+                         nsim = 50, folds = 5, quantile_grid = T)
+  qtimesp[i] = as.numeric(Sys.time() - s, units = "secs")
+  
+  s = Sys.time()
+  xg2 = local_grid_imp_cm2(formula = factor(y) ~ .,
+                         data = temp_df,
+                         parallel = T, cores = 5,
+                         method = "rf", tuneGrid = expand.grid(mtry = 3*i), 
+                         nsim = 50, folds = 5, quantile_grid = T)
+  qtimesp2[i] = as.numeric(Sys.time() - s, units = "secs")
+  
+  # l = data.frame(v1 = temp_df$x3y3,
+  #                CLIQUE = xg$local_imp$x3y3,
+  #                C2 = xg2$local_imp$x3y3,
+  #                SHAP = shap$x3y3, LIME = lime$x3y3)
+  # 
+  # l$p = i*6
+  # mp[[i]] = l
+  
+  print(i)
+}
+unregister_dopar()
+
+dat = data.frame(p = (1:6)*6, C2 = qtimesp2,
+                 CLIQUE = qtimesp, SHAP = stimesp, LIME = ltimesp)
+dat = dat %>% pivot_longer(cols = 2:5, values_to = "time")
+
+ggplot(dat, aes(x = p, y = time, colour = name, group = name)) + 
+  geom_point() + 
+  geom_line() +
+  #scale_x_continuous(limits = c(-0.1, 1.1)) +
+  scale_y_continuous(limits = c(0, 10))
+
+
+mmp = rbind(mp[[1]], mp[[2]], mp[[3]]#,
+            #mp[[4]], mp[[5]], mp[[6]]
+            )
+cor(mmp$CLIQUE, mmp$C2)
+plot(mmp$CLIQUE, mmp$C2)
+# # 
+# ggplot(mmp, aes(x = p, y = CLIQUE)) +
+#   geom_point(position = position_jitter(width = 0.2))
+# 
+# ggplot(mmp, aes(x = p, y = C2)) +
+#   geom_point(position = position_jitter(width = 0.2))
+# 
+ggplot(mmp, aes(x = CLIQUE, y = C2)) +
+  geom_point() + facet_wrap(vars(p)) + geom_abline()
+```
+
+\newpage
+# Sim N & P
+
+```{r, warning=FALSE, message=FALSE}
+np = vector("list", 3*3)
+
+stimes2 = vector(length = 3*3)
+ltimes2 = vector(length = 3*3)
+qtimes2 = vector(length = 3*3)
+qtimes22 = vector(length = 3*3)
+
+k = 1
+for(i in 0:2){
+  for(j in 1:3){
+    temp_df = mnist[sample(1:nrow(mnist), round(nrow(mnist)*i/100 + 30)),
+                    c(15, sample(c(1:14, 16:36), j*9 - 1), 37)]
+  
+    s = Sys.time()
+    rt = caret::train(temp_df[,-ncol(temp_df)], factor(temp_df$y), 
+                      method = "rf", tuneGrid = expand.grid(mtry = 5*j))
+    m_time = as.numeric(Sys.time() - s, units = "secs")
+  
+    s = Sys.time()
+    rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
+    rf_res <- treeshap::treeshap(rf_unified, temp_df)
+    shap = as.data.frame(rf_res$shaps)
+    stimes2[k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+  
+    s = Sys.time()
+    explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T, 
+                        n_bins = 10, use_density = T)
+    elim = explain(temp_df[,-ncol(temp_df)], explanation, 
+                   n_features = ncol(temp_df)-1, labels = "8")
+    lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+      pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+      dplyr::select(-case) %>% as.data.frame()
+    ltimes2[k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+    s = Sys.time()
+    xg = local_grid_imp_cm(formula = factor(y) ~ .,
+                           data = temp_df,
+                           method = "rf", tuneGrid = expand.grid(mtry = 5*j), 
+                           nsim = 50, folds = 5, quantile_grid = T)
+    qtimes2[k] = as.numeric(Sys.time() - s, units = "secs")
+    
+    s = Sys.time()
+    xg3 = local_grid_imp_cm3(formula = factor(y) ~ .,
+                           data = temp_df,
+                           parallel = T, cores = 5,
+                           method = "rf", tuneGrid = expand.grid(mtry = 5*j), 
+                           nsim = 50, folds = 5, quantile_grid = T)
+    qtimes22[k] = as.numeric(Sys.time() - s, units = "secs")
+    
+    l = data.frame(v1 = temp_df$x3y3,
+                 CLIQUE = xg$local_imp$x3y3,
+                 C2 = xg2$local_imp$x3y3,
+                 SHAP = shap$x3y3, LIME = lime$x3y3)
+
+    l$n = i
+    l$p = j
+    npo[[k]] = l
+    
+    print(k)
+    k = k + 1
+  }
+}
+
+dat2 = data.frame(n = rep(round(nrow(mnist)*0:2/50 + 30), each = 3), 
+                 p = rep((1:3)*9, times = 3), 
+                 CLIQUE = qtimes2, C2 = qtimes22, SHAP = stimes2, LIME = ltimes2)
+dat2 = dat2 %>% pivot_longer(cols = 3:6, values_to = "time")
+
+ggplot(dat2, aes(x = p, y = time, colour = name, group = name)) + 
+  geom_point() + 
+  geom_line()  + facet_wrap(vars(n)) #+
+  #scale_x_continuous(limits = c(-0.1, 1.1)) +
+  #scale_y_continuous(limits = c(0, 3), breaks = c(0, 1, 2, 3))
+
+
+ggplot(dat2, aes(x = n, y = time, colour = name, group = name)) + 
+  geom_point() + 
+  geom_line()  + facet_wrap(vars(p)) 
+
+
+mnp = rbind(np[[1]], np[[2]], np[[3]],
+            np[[4]], np[[5]], np[[6]],
+            np[[7]], np[[8]], np[[9]])
+
+cor(mnp$CLIQUE, mnp$C2)
+plot(mnp$CLIQUE, mnp$C2)
+
+
+ggplot(mnp, aes(x = CLIQUE, y = C2)) + geom_point() + facet_wrap(vars(n))
+ggplot(mnp, aes(x = CLIQUE, y = C2)) + geom_point() + 
+  ggh4x::facet_grid2(vars(n), vars(p)) + geom_abline()
+
+ggplot(mnp, aes(x = p, y = CLIQUE)) +
+  geom_point(position = position_jitter(width = 0.2)) + facet_wrap(vars(n))
+
+ggplot(mnp, aes(x = n, y = CLIQUE)) +
+  geom_point(position = position_jitter(width = 0.2)) + facet_wrap(vars(p))
+
+
+ggplot(mnp, aes(x = p, y = C2)) +
+  geom_point(position = position_jitter(width = 0.2)) + facet_wrap(vars(n))
+
+ggplot(mnp, aes(x = n, y = C2)) +
+  geom_point(position = position_jitter(width = 0.2)) + facet_wrap(vars(p))
+```
+
+
+# Sim N & P Big
+
+```{r, warning=FALSE, message=FALSE}
+stimesb2a = vector(length = 3*3)
+#ltimesb2 = vector(length = 3*3)
+qtimesb2a = vector(length = 3*3)
+
+k = 1
+
+for(i in 1:3){
+  for(j in 4:6){
+    temp_df = mnist[sample(1:nrow(mnist), round(nrow(mnist)*i/12)),
+                    c(15, sample(c(1:14, 16:36), j*5 - 1), 37)]
+  
+    cl <- makeCluster(5)
+    doParallel::registerDoParallel(cl)
+    s = Sys.time()
+    rt = caret::train(temp_df[,-ncol(temp_df)], factor(temp_df$y), 
+                      method = "rf", tuneGrid = expand.grid(mtry = 4*j))
+    m_time = as.numeric(Sys.time() - s, units = "secs")
+    stopCluster(cl)
+    unregister_dopar()
+  
+    s = Sys.time()
+    rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
+    rf_res <- treeshap::treeshap(rf_unified, temp_df)
+    shap = as.data.frame(rf_res$shaps)
+    stimesb2a[k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+  
+    # s = Sys.time()
+    # explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T, 
+    #                     n_bins = 10, use_density = T)
+    # elim = explain(temp_df[,-ncol(temp_df)], explanation, 
+    #                n_features = ncol(temp_df)-1, labels = "8")
+    # lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+    #   pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+    #   dplyr::select(-case) %>% as.data.frame()
+    # ltimesb2[k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+    s = Sys.time()
+    xg2 = local_grid_imp_cm3(formula = factor(y) ~ .,
+                           data = temp_df,
+                           parallel = T, cores = 5,
+                           method = "rf", tuneGrid = expand.grid(mtry = 4*j), 
+                           nsim = 50, folds = 5, quantile_grid = T)
+    qtimesb2a[k] = as.numeric(Sys.time() - s, units = "secs")
+    
+    print(k)
+    print(stimesb2a[k])
+    print(qtimesb2a[k])
+    k = k + 1
+  }
+}
+
+
+datb2 = data.frame(n = rep(round(nrow(mnist)*1:3/12), each = 3), 
+                 p = rep((4:6)*5, times = 3), 
+                 CLIQUE = qtimesb2, SHAP = stimesb2#, LIME = ltimesb2
+                 )
+datb22 = data.frame(n = rep(1:3*1000, each = 3), 
+                 p = rep((4:6)*5, times = 3), 
+                 CLIQUE = qtimesb2a, SHAP = stimesb2a#, LIME = ltimesb2
+                 )
+datb22
+datb2 = datb22 %>% pivot_longer(cols = 3:4, values_to = "time")
+
+ggplot(datb2, aes(x = p, y = time, colour = name, group = name)) + 
+  geom_point() + 
+  geom_line() + facet_wrap(vars(n))
+
+ggsave("p_speed.pdf")
+
+ggplot(datb2, aes(x = p, y = log(time), colour = name, group = name)) + 
+  geom_point() + 
+  geom_line() + facet_wrap(vars(n))
+
+ggsave("p_log_speed.pdf")
+
+ggplot(datb2, aes(x = n, y = time, colour = name, group = name)) + 
+  geom_point() + 
+  geom_line() + facet_wrap(vars(p))
+
+ggsave("n_speed.pdf")
+
+ggplot(datb2, aes(x = n, y = log(time), colour = name, group = name)) + 
+  geom_point() + 
+  geom_line() + facet_wrap(vars(p))
+
+ggsave("n_log_speed.pdf")
+```
+
+# Sim N & P Big Monte Carlo1
+
+```{r, warning=FALSE, message=FALSE}
+reps = 20
+
+stb2b = read.csv("shap_time2.csv")
+ltb2b = read.csv("lime_time2.csv")
+itb2b = read.csv("ici_time2.csv")
+qtb2b = read.csv("clique_time2.csv")
+# stb2b = mat.or.vec(reps, 4*4)
+# ltb2b = mat.or.vec(reps, 4)
+# itb2b = mat.or.vec(reps, 4)
+# qtb2b = mat.or.vec(reps, 4*4)
+
+for(mm in 18:reps){
+  set.seed(mm)
+  s1 = Sys.time()
+  k = 1
+  for(i in c(500, 1000, 2000, 4000)){
+    for(j in c(2, 10, 20, 30)){
+      s2 = Sys.time()
+      mt = ifelse(j == 1, 1, j/2)
+      
+      temp_df = mnist[sample(1:nrow(mnist), i),
+                      c(sample(1:36, j), 37)]
+
+      cl <- makeCluster(5)
+      doParallel::registerDoParallel(cl)
+      s = Sys.time()
+      rt = caret::train(temp_df[,-ncol(temp_df)], 
+                        factor(temp_df$y), 
+                        method = "rf", tuneGrid = expand.grid(mtry = mt))
+      m_time = as.numeric(Sys.time() - s, units = "secs")
+      stopCluster(cl)
+      unregister_dopar()
+    
+      s = Sys.time()
+      rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
+      rf_res <- treeshap::treeshap(rf_unified, temp_df)
+      shap = as.data.frame(rf_res$shaps)
+      stb2b[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+      if(i == 500){
+      s = Sys.time()
+      explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T,
+                          n_bins = 10, use_density = T)
+      elim = explain(temp_df[,-ncol(temp_df)], explanation,
+                     n_features = ncol(temp_df)-1, labels = "8")
+      lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+        pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+        dplyr::select(-case) %>% as.data.frame()
+      ltb2b[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+      
+      
+      s = Sys.time()
+      task = mlr::makeClassifTask(data = temp_df, target = "y")
+      learner <- mlr::makeLearner("classif.randomForest")
+      model <- mlr::train(learner, task)
+      
+      ici <- featureImportance::featureImportance(model, 
+                               data = temp_df, target = "y", 
+                               n.feat.perm = 25,
+                               local = TRUE)
+      iii = ici$importance |>
+        pivot_wider(id_cols = c(replace.id, n.feat.perm), names_from = features,
+                    values_from = mmce) |>
+        group_by(replace.id) |>
+        summarize(across(-n.feat.perm, mean, na.rm = TRUE)) |>
+        dplyr::select(!replace.id)
+      itb2b[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+      }
+      
+      s = Sys.time()
+      xg4 = local_grid_imp_cm4(formula = factor(y) ~ .,
+                             data = temp_df,
+                             parallel = T, cores = 5, seed = k,
+                             method = "rf", tuneGrid = expand.grid(mtry = mt), 
+                             nsim = 25, folds = 5, quantile_grid = T)
+      qtb2b[mm, k] = as.numeric(Sys.time() - s, units = "secs")
+      
+      print(k)
+      print(as.numeric(Sys.time() - s2, units = "mins"))
+      k = k + 1
+    }
+  }
+  
+  write.csv(stb2b, "shap_time3.csv", row.names = F)
+  write.csv(ltb2b, "lime_time3.csv", row.names = F)
+  write.csv(itb2b, "ici_time3.csv", row.names = F)
+  write.csv(qtb2b, "clique_time3.csv", row.names = F)
+  
+  print(mm)
+  print(as.numeric(Sys.time() - s1, units = "mins"))
+}
+
+stb2b
+ltb2b
+itb2b
+qtb2b
+```
+
+# Sim 1000 LIME Monte Carlo
+
+```{r, warning=FALSE, message=FALSE}
+reps = 20
+
+ll1 = mat.or.vec(reps, 4)
+ii1 = mat.or.vec(reps, 4)
+ll1 = read.csv("lime_time_1ka.csv")
+ii1 = read.csv("ici_time_1ka.csv")
+
+for(mm in 20:reps){
+  set.seed(mm)
+  s1 = Sys.time()
+  k = 1
+  for(j in c(2, 10, 20, 30)){
+    s2 = Sys.time()
+    mt = ifelse(j == 1, 1, j/2)
+    
+    temp_df = mnist[sample(1:nrow(mnist), 1000),
+                      c(sample(1:36, j), 37)]
+
+    cl <- makeCluster(5)
+    doParallel::registerDoParallel(cl)
+    s = Sys.time()
+    rt = caret::train(temp_df[,-ncol(temp_df)], 
+                      factor(temp_df$y), 
+                      method = "rf", tuneGrid = expand.grid(mtry = mt))
+    m_time = as.numeric(Sys.time() - s, units = "secs")
+    stopCluster(cl)
+    unregister_dopar()
+  
+    s = Sys.time()
+    explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T,
+                        n_bins = 10, use_density = T)
+    elim = explain(temp_df[,-ncol(temp_df)], explanation,
+                   n_features = ncol(temp_df)-1, labels = "8")
+    lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+      pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+      dplyr::select(-case) %>% as.data.frame()
+    ll1[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+    s = Sys.time()
+    task = mlr::makeClassifTask(data = temp_df, target = "y")
+    learner <- mlr::makeLearner("classif.randomForest")
+    model <- mlr::train(learner, task)
+    
+    ici <- featureImportance::featureImportance(model, 
+                             data = temp_df, target = "y", 
+                             n.feat.perm = 25,
+                             local = TRUE)
+    iii = ici$importance |>
+      pivot_wider(id_cols = c(replace.id, n.feat.perm), names_from = features,
+                  values_from = mmce) |>
+      group_by(replace.id) |>
+      summarize(across(-n.feat.perm, mean, na.rm = TRUE)) |>
+      dplyr::select(!replace.id)
+    ii1[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+    print(k)
+    print(as.numeric(Sys.time() - s2, units = "mins"))
+    k = k + 1
+  }
+  
+  write.csv(ll1, "lime_time_1ka.csv", row.names = F)
+  write.csv(ii1, "ici_time_1ka.csv", row.names = F)
+  
+  print(mm)
+  print(as.numeric(Sys.time() - s1, units = "mins"))
+}
+```
+
+# Sim 2000 LIME Monte Carlo
+
+```{r, warning=FALSE, message=FALSE}
+reps = 20
+
+ltb2e = mat.or.vec(reps, 4)
+itb2e = mat.or.vec(reps, 4)
+
+for(mm in 12:reps){
+  set.seed(mm)
+  s1 = Sys.time()
+  k = 1
+  for(j in c(2, 10, 20, 30)){
+    s2 = Sys.time()
+    mt = ifelse(j == 1, 1, j/2)
+    
+    temp_df = mnist[sample(1:nrow(mnist), 2000),
+                      c(sample(1:36, j), 37)]
+
+    cl <- makeCluster(5)
+    doParallel::registerDoParallel(cl)
+    s = Sys.time()
+    rt = caret::train(temp_df[,-ncol(temp_df)], 
+                      factor(temp_df$y), 
+                      method = "rf", tuneGrid = expand.grid(mtry = mt))
+    m_time = as.numeric(Sys.time() - s, units = "secs")
+    stopCluster(cl)
+    unregister_dopar()
+  
+    s = Sys.time()
+    explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T,
+                        n_bins = 10, use_density = T)
+    elim = explain(temp_df[,-ncol(temp_df)], explanation,
+                   n_features = ncol(temp_df)-1, labels = "8")
+    lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+      pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+      dplyr::select(-case) %>% as.data.frame()
+    ltb2e[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+    s = Sys.time()
+    task = mlr::makeClassifTask(data = temp_df, target = "y")
+    learner <- mlr::makeLearner("classif.randomForest")
+    model <- mlr::train(learner, task)
+    
+    ici <- featureImportance::featureImportance(model, 
+                             data = temp_df, target = "y", 
+                             n.feat.perm = 25,
+                             local = TRUE)
+    iii = ici$importance |>
+      pivot_wider(id_cols = c(replace.id, n.feat.perm), names_from = features,
+                  values_from = mmce) |>
+      group_by(replace.id) |>
+      summarize(across(-n.feat.perm, mean, na.rm = TRUE)) |>
+      dplyr::select(!replace.id)
+    itb2e[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+    print(k)
+    print(as.numeric(Sys.time() - s2, units = "mins"))
+    k = k + 1
+  }
+  
+  write.csv(ltb2e, "lime_time_master2k.csv", row.names = F)
+  write.csv(itb2e, "ici_time_master2k.csv", row.names = F)
+  
+  print(mm)
+  print(as.numeric(Sys.time() - s1, units = "mins"))
+}
+
+ltb2e
+itb2e
+```
+
+# Sim 4000 LIME Monte Carlo
+
+```{r, warning=FALSE, message=FALSE, eval=FALSE, echo=FALSE}
+reps = 20
+
+lll1 = mat.or.vec(reps, 4)
+iii1 = mat.or.vec(reps, 4)
+
+for(mm in 1:reps){
+  set.seed(mm)
+  s1 = Sys.time()
+  k = 1
+  for(j in c(2, 10, 20, 30)){
+    s2 = Sys.time()
+    mt = ifelse(j == 1, 1, j/2)
+    
+    temp_df = mnist[sample(1:nrow(mnist), 4000),
+                      c(sample(1:36, j), 37)]
+
+    cl <- makeCluster(5)
+    doParallel::registerDoParallel(cl)
+    s = Sys.time()
+    rt = caret::train(temp_df[,-ncol(temp_df)], 
+                      factor(temp_df$y), 
+                      method = "rf", tuneGrid = expand.grid(mtry = mt))
+    m_time = as.numeric(Sys.time() - s, units = "secs")
+    stopCluster(cl)
+    unregister_dopar()
+  
+    s = Sys.time()
+    explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T,
+                        n_bins = 10, use_density = T)
+    elim = explain(temp_df[,-ncol(temp_df)], explanation,
+                   n_features = ncol(temp_df)-1, labels = "8")
+    lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
+      pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
+      dplyr::select(-case) %>% as.data.frame()
+    lll1[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+    s = Sys.time()
+    task = mlr::makeClassifTask(data = temp_df, target = "y")
+    learner <- mlr::makeLearner("classif.randomForest")
+    model <- mlr::train(learner, task)
+    
+    ici <- featureImportance::featureImportance(model, 
+                             data = temp_df, target = "y", 
+                             n.feat.perm = 25,
+                             local = TRUE)
+    iii = ici$importance |>
+      pivot_wider(id_cols = c(replace.id, n.feat.perm), names_from = features,
+                  values_from = mmce) |>
+      group_by(replace.id) |>
+      summarize(across(-n.feat.perm, mean, na.rm = TRUE)) |>
+      dplyr::select(!replace.id)
+    iii1[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
+    
+    print(k)
+    print(as.numeric(Sys.time() - s2, units = "mins"))
+    k = k + 1
+  }
+  
+  write.csv(lll1, "lime_time_4k.csv", row.names = F)
+  write.csv(iii1, "ici_time_4k.csv", row.names = F)
+  
+  print(mm)
+  print(as.numeric(Sys.time() - s1, units = "mins"))
+}
+```
+
+# Merge and Plots
+
+```{r, eval=FALSE, echo=TRUE}
+stb = read.csv("shap_time3.csv")
+ltb2b = read.csv("lime_time3.csv")
+itb2b = read.csv("ici_time3.csv")
+qtb = read.csv("clique_time3.csv")
+
+l1 = read.csv("lime_time_1ka.csv")
+i1 = read.csv("ici_time_1ka.csv")
+
+l2 = read.csv("lime_time_master2k.csv")
+i2 = read.csv("ici_time_master2k.csv")
+
+ltb = cbind(ltb2b, l1, l2)
+itb = cbind(itb2b, i1, i2)
+colnames(ltb)[5:12] = colnames(stb)[5:12]
+colnames(itb)[5:12] = colnames(stb)[5:12]
+
+write.csv(ltb, "lime_time.csv", row.names = F)
+write.csv(itb, "ici_time.csv", row.names = F)
+```
+
+```{r}
+stb = read.csv("shap_time3.csv")
+ltb = read.csv("lime_time.csv")
+itb = read.csv("ici_time.csv")
+qtb = read.csv("clique_time3.csv")
+```
+
+```{r}
+cstb2 = colMeans(stb)
+cltb2 = colMeans(ltb)
+citb2 = colMeans(itb)
+cqtb2 = colMeans(qtb)
+
+mstb2 = apply(stb, 2, median)
+mltb2 = apply(ltb, 2, median)
+mitb2 = apply(itb, 2, median)
+mqtb2 = apply(qtb, 2, median)
+
+smax = apply(stb, 2, max)
+smin = apply(stb, 2, min)
+lmax = apply(ltb, 2, max)
+lmin = apply(ltb, 2, min)
+imax = apply(itb, 2, max)
+imin = apply(itb, 2, min)
+qmax = apply(qtb, 2, max)
+qmin = apply(qtb, 2, min)
+
+# dd2a = data.frame(n = rep(c(500, 1000, 2000, 4000), each = 4), 
+#                  p = rep(c(2, 10, 20, 30), times = 4), 
+#                  CLIQUE = cqtb2, 
+#                  SHAP = cstb2, 
+#                  LIME = c(cltb2, rep(NA, 4)),
+#                  ICI = c(citb2, rep(NA, 4)),
+#                  qmin, smin, 
+#                  lmin = c(lmin, rep(NA, 4)), imin = c(imin, rep(NA, 4)),  
+#                  qmax, smax, 
+#                  lmax = c(lmax, rep(NA, 4)), imax = c(imax, rep(NA, 4))
+#                  )
+
+dd2a = data.frame(n = rep(c(500, 1000, 2000, 4000), each = 4), 
+                 p = rep(c(2, 10, 20, 30), times = 4), 
+                 CLIQUE = mqtb2, 
+                 SHAP = mstb2, 
+                 LIME = c(mltb2, rep(NA, 4)),
+                 ICI = c(mitb2, rep(NA, 4)),
+                 qmin, smin, 
+                 lmin = c(lmin, rep(NA, 4)), imin = c(imin, rep(NA, 4)),  
+                 qmax, smax, 
+                 lmax = c(lmax, rep(NA, 4)), imax = c(imax, rep(NA, 4))
+                 )
+
+ddb2a = dd2a %>% pivot_longer(cols = 3:6, values_to = "time") %>% 
+  dplyr::select(n, p, name, time)
+
+ddb2min = dd2a %>% pivot_longer(cols = 7:10, values_to = "min") %>% 
+  pull(min)
+
+ddb2max = dd2a %>% pivot_longer(cols = 11:14, values_to = "max") %>% 
+  pull(max)
+
+ddb2a$min = ddb2min
+ddb2a$max = ddb2max
+
+colnames(ddb2a)[1] = "Obs"
+colnames(ddb2a)[2] = "Vars"
+```
+
+```{r}
+ddb2a$name = factor(ddb2a$name, 
+                    levels = rev(c("ICI", "SHAP", "LIME", "CLIQUE")))
+
+dimw = 5.5
+dimh = 3.3
+
+ggplot(ddb2a, aes(x = Vars, y = time, colour = name, group = name)) + 
+  geom_point(size = 2) + 
+  geom_errorbar(aes(ymin = min, ymax = max), width = 4, alpha = 0.8,
+                linetype = "dashed") +
+  geom_line() + 
+  facet_wrap(vars(Obs),  labeller = "label_both") + 
+  xlab("Number of Variables (p)") +
+  ylab("Time (secs)") + ggeasy::easy_remove_legend_title() 
+  # + ggeasy::easy_legend_at("bottom") 
+
+ggsave("time_vs_vars_fixed.pdf", dpi = 800, width = dimw, height = dimh)
+
+ggplot(ddb2a, aes(x = Vars, y = time, colour = name, group = name)) + 
+  geom_point(size = 2) + 
+  geom_errorbar(aes(ymin = min, ymax = max), width = 4, alpha = 0.8,
+                linetype = "dashed") +
+  geom_line() + 
+  facet_wrap(vars(Obs), scales = "free", labeller = "label_both") + 
+  xlab("Number of Variables (p)") +
+  ylab("Time (secs)")  + ggeasy::easy_remove_legend_title()
+  #+ ggeasy::easy_legend_at("bottom")
+
+ggsave("time_vs_vars.pdf", dpi = 800, width = dimw, height = dimh)
+
+ggplot(ddb2a, aes(x = Obs, y = time, colour = name, group = name)) + 
+  geom_point(size = 2) + 
+  geom_errorbar(aes(ymin = min, ymax = max), alpha = 0.8,
+                width = 0.3, linetype = "dashed") +
+  geom_line() + 
+  facet_wrap(vars(Vars), scales = "fixed", labeller = "label_both") +
+    scale_x_continuous(limits = c(450, 4500),
+    trans = "log2",
+    breaks = unique(ddb2a$Obs),           # or specify your desired ticks
+    labels = unique(ddb2a$Obs)            # keeps labels unchanged
+  ) + 
+  xlab("Number of Observations (n)") +
+  ylab("Time (secs)") +
+  ggeasy::easy_remove_legend_title()
+  #+ ggeasy::easy_legend_at("bottom")
+
+ggsave("time_vs_obs.pdf", dpi = 800, width = dimw, height = dimh)
+```
