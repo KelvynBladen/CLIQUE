@@ -120,7 +120,7 @@ local_grid_imp_cm <- function(formula = medv ~ ., data = Boston,
 ```
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
-source("clique.R")
+source("../../R/clique.R")
 ```
 
 

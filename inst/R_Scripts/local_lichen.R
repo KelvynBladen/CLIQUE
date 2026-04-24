@@ -152,7 +152,7 @@ xm2 = local_grid_imp_cm(formula = LobaOreg ~ ., data = lichen,
                         folds = 5, quantile_grid = T)
 tictoc::toc()
 
-source("inst/R_Scripts/clique.R")
+source("R/clique.R")
 tictoc::tic()
 xg2 = clique(formula = LobaOreg ~ ., data = lichen, parallel = T, cores = 5,
              seed = 123, method = "rf", tuneGrid = tuneGrid,

@@ -121,7 +121,7 @@ xm3 = local_grid_imp_cm(formula = Strength ~ ., data = concrete,
                         folds = 5, quantile_grid = T)
 tictoc::toc()
 
-source("inst/R_Scripts/clique.R")
+source("R/clique.R")
 set.seed(123)
 tictoc::tic()
 xg3 = clique(formula = Strength ~ ., data = concrete, parallel = T, cores = 5,

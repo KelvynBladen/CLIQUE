@@ -775,18 +775,15 @@ x_loc[, i] <- rowSums(parLapply(cl, grid_vals, function(j) {
 stopCluster(cl)
 ```
 
-
 \newpage
 # Data
 
 ```{r, message=FALSE, warning=FALSE}
-mnist = read.csv("mnist38.csv")
-
+mnist <- arrow::read_parquet("inst/extdata/mnist38.parquet")
 
 mnist1 = mnist[sample(1:nrow(mnist), 200),]
 ```
 
-\newpage
 # Training Local Importance
 
 ```{r, warning=FALSE, message=FALSE}
@@ -849,7 +846,6 @@ gl + gs + gp + gq +
 
 #ggsave("xor2patch.pdf", dpi = 1600, width = 6.3, height = 4.5)
 
-
 # ggpairs(d1, mapping = aes(color = 1:404 < 401))
 
 # d2 = data.frame(v = dfc[,2], perm = xl$local_imp$v2,
@@ -865,386 +861,21 @@ d3 = data.frame(v = dfc[,3], #perm = xl$local_imp$v3,
 # ggpairs(d3, mapping = aes(color = 1:404 < 401))
 ```
 
-\newpage
-# Sim N
-
-```{r, warning=FALSE, message=FALSE}
-tuneGrid <- expand.grid(mtry = 20)
-
-mm = vector("list", 5)
-
-stimes = vector(length = 5)
-ltimes = vector(length = 5)
-qtimes = vector(length = 5)
-
-for(i in 1:5){
-  temp_df = mnist[sample(1:nrow(mnist), nrow(mnist)*i/200), ]
-  
-  s = Sys.time()
-  rt = caret::train(temp_df[,-37], factor(temp_df$y), method = "rf",
-                    tuneGrid = tuneGrid)
-  m_time = as.numeric(Sys.time() - s, units = "secs")
-  
-  s = Sys.time()
-  rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
-  rf_res <- treeshap::treeshap(rf_unified, temp_df)
-  shap = as.data.frame(rf_res$shaps)
-  stimes[i] = as.numeric(Sys.time() - s, units = "secs") + m_time
-  
-  s = Sys.time()
-  explanation <- lime(temp_df[,-37], rt, bin_continuous = T, n_bins = 10, 
-                      use_density = T)
-  
-  elim = explain(temp_df[,-37], explanation, n_features = 36, labels = "8")
-  
-  lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
-    pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
-    dplyr::select(-case) %>% as.data.frame()
-  ltimes[i] = as.numeric(Sys.time() - s, units = "secs") + m_time
-  
-  s = Sys.time()
-  xg = local_grid_imp_cm(formula = factor(y) ~ .,
-                         data = temp_df,
-                         method = "rf", tuneGrid = tuneGrid, 
-                         nsim = 50, folds = 5, quantile_grid = T)
-  qtimes[i] = as.numeric(Sys.time() - s, units = "secs")
-  
-  l = data.frame(v1 = temp_df$x3y3,
-                 CLIQUE = xg$local_imp$x3y3,
-                 SHAP = shap$x3y3, LIME = lime$x3y3)
-  
-  l$n = i
-  mm[[i]] = l
-  
-  print(i)
-}
-
-dat = data.frame(prop = 1:5 / 200, 
-                 CLIQUE = qtimes, SHAP = stimes, LIME = ltimes)
-dat = dat %>% pivot_longer(cols = 2:4, values_to = "time")
-
-ggplot(dat, aes(x = prop, y = time, colour = name, group = name)) + 
-  geom_point() + 
-  geom_line() #+
-  #scale_x_continuous(limits = c(-0.1, 1.1)) +
-  #scale_y_continuous(limits = c(0, 3), breaks = c(0, 1, 2, 3))
-
-mmm = rbind(mm[[1]], mm[[2]], mm[[3]], mm[[4]], mm[[5]])
-
-ggplot(mmm, aes(x = n, y = CLIQUE)) + 
-  geom_point(position = position_jitter(width = 0.2))# +
-  # scale_x_continuous(breaks = 0:5*40, limits = c(0, 201)) +
-  # scale_y_continuous(limits = c(-0.2, 1.05), breaks = -1:5 / 5)
-```
-
-\newpage
-# Sim P
-
-```{r, warning=FALSE, message=FALSE}
-mp = vector("list", 6)
-
-stimesp = vector(length = 6)
-ltimesp = vector(length = 6)
-qtimesp = vector(length = 6)
-qtimesp2 = vector(length = 6)
-
-ind = sample(1:nrow(mnist), 50)
-
-for(i in 1:3){
-  temp_df = mnist[ind, c(15, sample(c(1:14, 16:36), i*6 - 1), 37)]
-  
-  s = Sys.time()
-  rt = caret::train(temp_df[,-ncol(temp_df)], factor(temp_df$y), method = "rf",
-                    tuneGrid = expand.grid(mtry = 3*i))
-  m_time = as.numeric(Sys.time() - s, units = "secs")
-  
-  s = Sys.time()
-  rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
-  rf_res <- treeshap::treeshap(rf_unified, temp_df)
-  shap = as.data.frame(rf_res$shaps)
-  stimesp[i] = as.numeric(Sys.time() - s, units = "secs") + m_time
-  
-  s = Sys.time()
-  explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T, 
-                      n_bins = 10, use_density = T)
-  elim = explain(temp_df[,-ncol(temp_df)], explanation, 
-                 n_features = ncol(temp_df)-1, labels = "8")
-  lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
-    pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
-    dplyr::select(-case) %>% as.data.frame()
-  ltimesp[i] = as.numeric(Sys.time() - s, units = "secs") + m_time
-  
-  s = Sys.time()
-  xg = local_grid_imp_cm(formula = factor(y) ~ .,
-                         data = temp_df,
-                         method = "rf", tuneGrid = expand.grid(mtry = 3*i), 
-                         nsim = 50, folds = 5, quantile_grid = T)
-  qtimesp[i] = as.numeric(Sys.time() - s, units = "secs")
-  
-  s = Sys.time()
-  xg2 = local_grid_imp_cm2(formula = factor(y) ~ .,
-                         data = temp_df,
-                         parallel = T, cores = 5,
-                         method = "rf", tuneGrid = expand.grid(mtry = 3*i), 
-                         nsim = 50, folds = 5, quantile_grid = T)
-  qtimesp2[i] = as.numeric(Sys.time() - s, units = "secs")
-  
-  # l = data.frame(v1 = temp_df$x3y3,
-  #                CLIQUE = xg$local_imp$x3y3,
-  #                C2 = xg2$local_imp$x3y3,
-  #                SHAP = shap$x3y3, LIME = lime$x3y3)
-  # 
-  # l$p = i*6
-  # mp[[i]] = l
-  
-  print(i)
-}
-unregister_dopar()
-
-dat = data.frame(p = (1:6)*6, C2 = qtimesp2,
-                 CLIQUE = qtimesp, SHAP = stimesp, LIME = ltimesp)
-dat = dat %>% pivot_longer(cols = 2:5, values_to = "time")
-
-ggplot(dat, aes(x = p, y = time, colour = name, group = name)) + 
-  geom_point() + 
-  geom_line() +
-  #scale_x_continuous(limits = c(-0.1, 1.1)) +
-  scale_y_continuous(limits = c(0, 10))
 
 
-mmp = rbind(mp[[1]], mp[[2]], mp[[3]]#,
-            #mp[[4]], mp[[5]], mp[[6]]
-            )
-cor(mmp$CLIQUE, mmp$C2)
-plot(mmp$CLIQUE, mmp$C2)
-# # 
-# ggplot(mmp, aes(x = p, y = CLIQUE)) +
-#   geom_point(position = position_jitter(width = 0.2))
-# 
-# ggplot(mmp, aes(x = p, y = C2)) +
-#   geom_point(position = position_jitter(width = 0.2))
-# 
-ggplot(mmp, aes(x = CLIQUE, y = C2)) +
-  geom_point() + facet_wrap(vars(p)) + geom_abline()
-```
-
-\newpage
-# Sim N & P
-
-```{r, warning=FALSE, message=FALSE}
-np = vector("list", 3*3)
-
-stimes2 = vector(length = 3*3)
-ltimes2 = vector(length = 3*3)
-qtimes2 = vector(length = 3*3)
-qtimes22 = vector(length = 3*3)
-
-k = 1
-for(i in 0:2){
-  for(j in 1:3){
-    temp_df = mnist[sample(1:nrow(mnist), round(nrow(mnist)*i/100 + 30)),
-                    c(15, sample(c(1:14, 16:36), j*9 - 1), 37)]
-  
-    s = Sys.time()
-    rt = caret::train(temp_df[,-ncol(temp_df)], factor(temp_df$y), 
-                      method = "rf", tuneGrid = expand.grid(mtry = 5*j))
-    m_time = as.numeric(Sys.time() - s, units = "secs")
-  
-    s = Sys.time()
-    rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
-    rf_res <- treeshap::treeshap(rf_unified, temp_df)
-    shap = as.data.frame(rf_res$shaps)
-    stimes2[k] = as.numeric(Sys.time() - s, units = "secs") + m_time
-  
-    s = Sys.time()
-    explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T, 
-                        n_bins = 10, use_density = T)
-    elim = explain(temp_df[,-ncol(temp_df)], explanation, 
-                   n_features = ncol(temp_df)-1, labels = "8")
-    lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
-      pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
-      dplyr::select(-case) %>% as.data.frame()
-    ltimes2[k] = as.numeric(Sys.time() - s, units = "secs") + m_time
-    
-    s = Sys.time()
-    xg = local_grid_imp_cm(formula = factor(y) ~ .,
-                           data = temp_df,
-                           method = "rf", tuneGrid = expand.grid(mtry = 5*j), 
-                           nsim = 50, folds = 5, quantile_grid = T)
-    qtimes2[k] = as.numeric(Sys.time() - s, units = "secs")
-    
-    s = Sys.time()
-    xg3 = local_grid_imp_cm3(formula = factor(y) ~ .,
-                           data = temp_df,
-                           parallel = T, cores = 5,
-                           method = "rf", tuneGrid = expand.grid(mtry = 5*j), 
-                           nsim = 50, folds = 5, quantile_grid = T)
-    qtimes22[k] = as.numeric(Sys.time() - s, units = "secs")
-    
-    l = data.frame(v1 = temp_df$x3y3,
-                 CLIQUE = xg$local_imp$x3y3,
-                 C2 = xg2$local_imp$x3y3,
-                 SHAP = shap$x3y3, LIME = lime$x3y3)
-
-    l$n = i
-    l$p = j
-    npo[[k]] = l
-    
-    print(k)
-    k = k + 1
-  }
-}
-
-dat2 = data.frame(n = rep(round(nrow(mnist)*0:2/50 + 30), each = 3), 
-                 p = rep((1:3)*9, times = 3), 
-                 CLIQUE = qtimes2, C2 = qtimes22, SHAP = stimes2, LIME = ltimes2)
-dat2 = dat2 %>% pivot_longer(cols = 3:6, values_to = "time")
-
-ggplot(dat2, aes(x = p, y = time, colour = name, group = name)) + 
-  geom_point() + 
-  geom_line()  + facet_wrap(vars(n)) #+
-  #scale_x_continuous(limits = c(-0.1, 1.1)) +
-  #scale_y_continuous(limits = c(0, 3), breaks = c(0, 1, 2, 3))
 
 
-ggplot(dat2, aes(x = n, y = time, colour = name, group = name)) + 
-  geom_point() + 
-  geom_line()  + facet_wrap(vars(p)) 
-
-
-mnp = rbind(np[[1]], np[[2]], np[[3]],
-            np[[4]], np[[5]], np[[6]],
-            np[[7]], np[[8]], np[[9]])
-
-cor(mnp$CLIQUE, mnp$C2)
-plot(mnp$CLIQUE, mnp$C2)
-
-
-ggplot(mnp, aes(x = CLIQUE, y = C2)) + geom_point() + facet_wrap(vars(n))
-ggplot(mnp, aes(x = CLIQUE, y = C2)) + geom_point() + 
-  ggh4x::facet_grid2(vars(n), vars(p)) + geom_abline()
-
-ggplot(mnp, aes(x = p, y = CLIQUE)) +
-  geom_point(position = position_jitter(width = 0.2)) + facet_wrap(vars(n))
-
-ggplot(mnp, aes(x = n, y = CLIQUE)) +
-  geom_point(position = position_jitter(width = 0.2)) + facet_wrap(vars(p))
-
-
-ggplot(mnp, aes(x = p, y = C2)) +
-  geom_point(position = position_jitter(width = 0.2)) + facet_wrap(vars(n))
-
-ggplot(mnp, aes(x = n, y = C2)) +
-  geom_point(position = position_jitter(width = 0.2)) + facet_wrap(vars(p))
-```
-
-
-# Sim N & P Big
-
-```{r, warning=FALSE, message=FALSE}
-stimesb2a = vector(length = 3*3)
-#ltimesb2 = vector(length = 3*3)
-qtimesb2a = vector(length = 3*3)
-
-k = 1
-
-for(i in 1:3){
-  for(j in 4:6){
-    temp_df = mnist[sample(1:nrow(mnist), round(nrow(mnist)*i/12)),
-                    c(15, sample(c(1:14, 16:36), j*5 - 1), 37)]
-  
-    cl <- makeCluster(5)
-    doParallel::registerDoParallel(cl)
-    s = Sys.time()
-    rt = caret::train(temp_df[,-ncol(temp_df)], factor(temp_df$y), 
-                      method = "rf", tuneGrid = expand.grid(mtry = 4*j))
-    m_time = as.numeric(Sys.time() - s, units = "secs")
-    stopCluster(cl)
-    unregister_dopar()
-  
-    s = Sys.time()
-    rf_unified <- treeshap::randomForest.unify(rt$finalModel, temp_df)
-    rf_res <- treeshap::treeshap(rf_unified, temp_df)
-    shap = as.data.frame(rf_res$shaps)
-    stimesb2a[k] = as.numeric(Sys.time() - s, units = "secs") + m_time
-  
-    # s = Sys.time()
-    # explanation <- lime(temp_df[,-ncol(temp_df)], rt, bin_continuous = T, 
-    #                     n_bins = 10, use_density = T)
-    # elim = explain(temp_df[,-ncol(temp_df)], explanation, 
-    #                n_features = ncol(temp_df)-1, labels = "8")
-    # lime = elim %>% dplyr::select(case, feature, feature_weight) %>%
-    #   pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
-    #   dplyr::select(-case) %>% as.data.frame()
-    # ltimesb2[k] = as.numeric(Sys.time() - s, units = "secs") + m_time
-    
-    s = Sys.time()
-    xg2 = local_grid_imp_cm3(formula = factor(y) ~ .,
-                           data = temp_df,
-                           parallel = T, cores = 5,
-                           method = "rf", tuneGrid = expand.grid(mtry = 4*j), 
-                           nsim = 50, folds = 5, quantile_grid = T)
-    qtimesb2a[k] = as.numeric(Sys.time() - s, units = "secs")
-    
-    print(k)
-    print(stimesb2a[k])
-    print(qtimesb2a[k])
-    k = k + 1
-  }
-}
-
-
-datb2 = data.frame(n = rep(round(nrow(mnist)*1:3/12), each = 3), 
-                 p = rep((4:6)*5, times = 3), 
-                 CLIQUE = qtimesb2, SHAP = stimesb2#, LIME = ltimesb2
-                 )
-datb22 = data.frame(n = rep(1:3*1000, each = 3), 
-                 p = rep((4:6)*5, times = 3), 
-                 CLIQUE = qtimesb2a, SHAP = stimesb2a#, LIME = ltimesb2
-                 )
-datb22
-datb2 = datb22 %>% pivot_longer(cols = 3:4, values_to = "time")
-
-ggplot(datb2, aes(x = p, y = time, colour = name, group = name)) + 
-  geom_point() + 
-  geom_line() + facet_wrap(vars(n))
-
-ggsave("p_speed.pdf")
-
-ggplot(datb2, aes(x = p, y = log(time), colour = name, group = name)) + 
-  geom_point() + 
-  geom_line() + facet_wrap(vars(n))
-
-ggsave("p_log_speed.pdf")
-
-ggplot(datb2, aes(x = n, y = time, colour = name, group = name)) + 
-  geom_point() + 
-  geom_line() + facet_wrap(vars(p))
-
-ggsave("n_speed.pdf")
-
-ggplot(datb2, aes(x = n, y = log(time), colour = name, group = name)) + 
-  geom_point() + 
-  geom_line() + facet_wrap(vars(p))
-
-ggsave("n_log_speed.pdf")
-```
-
-# Sim N & P Big Monte Carlo1
+# Sim N & P Big Monte Carlo
 
 ```{r, warning=FALSE, message=FALSE}
 reps = 20
 
-stb2b = read.csv("shap_time2.csv")
-ltb2b = read.csv("lime_time2.csv")
-itb2b = read.csv("ici_time2.csv")
-qtb2b = read.csv("clique_time2.csv")
-# stb2b = mat.or.vec(reps, 4*4)
-# ltb2b = mat.or.vec(reps, 4)
-# itb2b = mat.or.vec(reps, 4)
-# qtb2b = mat.or.vec(reps, 4*4)
+stb2b = mat.or.vec(reps, 4*4)
+ltb2b = mat.or.vec(reps, 4)
+itb2b = mat.or.vec(reps, 4)
+qtb2b = mat.or.vec(reps, 4*4)
 
-for(mm in 18:reps){
+for(mm in 1:reps){
   set.seed(mm)
   s1 = Sys.time()
   k = 1
@@ -1282,7 +913,6 @@ for(mm in 18:reps){
         pivot_wider(names_from = feature, values_from = c(feature_weight)) %>%
         dplyr::select(-case) %>% as.data.frame()
       ltb2b[mm, k] = as.numeric(Sys.time() - s, units = "secs") + m_time
-      
       
       s = Sys.time()
       task = mlr::makeClassifTask(data = temp_df, target = "y")
@@ -1324,11 +954,6 @@ for(mm in 18:reps){
   print(mm)
   print(as.numeric(Sys.time() - s1, units = "mins"))
 }
-
-stb2b
-ltb2b
-itb2b
-qtb2b
 ```
 
 # Sim 1000 LIME Monte Carlo
@@ -1469,9 +1094,6 @@ for(mm in 12:reps){
   print(mm)
   print(as.numeric(Sys.time() - s1, units = "mins"))
 }
-
-ltb2e
-itb2e
 ```
 
 # Sim 4000 LIME Monte Carlo

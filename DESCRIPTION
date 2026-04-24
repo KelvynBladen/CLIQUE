@@ -1,7 +1,6 @@
 Package: CLIQUE
 Type: Package
-Title: Compute Model-Agnostic Conditional Local Importance Values by Quantile 
-    Expectations
+Title: Conditional Local Importance by Quantile Expectations
 Version: 0.1.0
 Authors@R: c(person("Kelvyn", "Bladen", role = c("aut", "cre"), 
              email = "kelvyn.bladen@usu.edu"),
@@ -17,16 +16,17 @@ Depends:
 Imports:
     caret,
     dplyr,
-    gbm,
-    ggeasy,
+    datasets,
+    doParallel,
+    fastDummies,
+    future.apply,
+    pracma,
+    stats,
+    tidyr,
     ggplot2,
-    methods,
-    patchwork,
-    pdp,
     randomForest,
     rlang,
-    stats,
-    tidyr
+    pdp
 Suggests: 
     knitr,
     rmarkdown,

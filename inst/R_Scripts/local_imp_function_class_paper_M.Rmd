@@ -425,7 +425,7 @@ stopCluster(cl)
 ```
 
 ```{r, warning=FALSE, message=FALSE, echo=FALSE}
-source("clique.R")
+source("../../R/clique.R")
 ```
 
 \newpage

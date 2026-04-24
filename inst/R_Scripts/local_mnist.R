@@ -5,7 +5,7 @@ library(randomForestVIP)
 library(caret)
 library(scales)
 library(ggeasy)
-source("inst/R_Scripts/pdp_multiclass.R")
+source("R/pdp_multiclass.R")
 
 tuneGrid = NULL
 local_grid_imp_cm <- function(formula = medv ~ ., data = Boston,
@@ -15,16 +15,16 @@ local_grid_imp_cm <- function(formula = medv ~ ., data = Boston,
   x <- model_frame[, -1]
   y <- model_frame[, 1]
   nc <- ncol(x)
-  
+
   if (is(y, "factor")) {
     y = factor(y, labels = make.names(levels(y)))
   }
-  
+
   set.seed(123)
   flds <- createFolds(y, k = folds, returnTrain = T)
   set.seed(123)
   flds0 <- createFolds(y, k = folds, list = F, returnTrain = F)
-  
+
   model <- train(x, y,
                  # formula, data = data,
                  method = method,
@@ -33,7 +33,7 @@ local_grid_imp_cm <- function(formula = medv ~ ., data = Boston,
                                           index = flds,
                                           savePredictions = "final",
                                           classProbs = T))
-  
+
   mods = list()
   for(k in 1:folds){
     mods[[k]] <- train(x[flds0 != k,], y[flds0 != k],
@@ -42,18 +42,18 @@ local_grid_imp_cm <- function(formula = medv ~ ., data = Boston,
                        tuneGrid = model$finalModel$tuneValue,
                        trControl = trainControl(classProbs = T))
   }
-  
-  
+
+
   output = list()
   output$bestTune = model$bestTune
   output$results = model$results
   output$finalModel = model$finalModel
-  
+
   model$pred = model$pred %>% arrange(rowIndex)
-  
+
   x_loc <- x
   x_loc[, ] <- 0
-  
+
   if (!is(y, "factor")) {
     p = model$pred$pred
     truth = model$pred$obs
@@ -63,7 +63,7 @@ local_grid_imp_cm <- function(formula = medv ~ ., data = Boston,
     p = model$pred %>% dplyr::select(levels(y))
     m <- rowMeans((yd - p)^2)
   }
-  
+
   for (i in seq_len(nc)) {
     if(!inherits(x[,i], "numeric")){
       # perhaps do a permutation for low level factors!!
@@ -74,11 +74,11 @@ local_grid_imp_cm <- function(formula = medv ~ ., data = Boston,
                          quantile(x[,i], probs = seq(0, 1, length = nsim)), #quantile
                          seq(min(x[,i]), max(x[,i]), length = nsim)) #uniform
     }
-    
+
     for (j in grid_vals) {
       x_new <- x
       x_new[, i] <- j
-      
+
       if (!is(y, "factor")) {
         pr <- truth
         for(k in 1:folds){
@@ -367,7 +367,7 @@ xm4 = local_grid_imp_cm(formula = z ~ ., data = mnist,
                         folds = 5, quantile_grid = T)
 tictoc::toc()
 
-source("inst/R_Scripts/clique.R")
+source("R/clique.R")
 tictoc::tic()
 xg4 = clique(formula = z ~ ., data = mnist, parallel = T, cores = 5,
              seed = 123, method = "rf", tuneGrid = tuneGrid,
