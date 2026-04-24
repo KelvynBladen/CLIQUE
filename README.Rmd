@@ -1,18 +1,28 @@
+---
+output: github_document
+---
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.path = "man/figures/README-",
+  out.width = "100%"
+)
+```
 
 # CLIQUE
 
 <!-- badges: start -->
 <!-- badges: end -->
 
-The goal of CLIQUE is to compute local variable importance values for a
-dataset, conditioned on a model.
+The goal of CLIQUE is to compute local variable importance values for a dataset, conditioned on a model.
 
 ## Installation
 
-You can install the development version of CLIQUE from
-[GitHub](https://github.com/) with:
+You can install the development version of CLIQUE from [GitHub](https://github.com/) with:
 
 ``` r
 # install.packages("pak")
@@ -21,21 +31,21 @@ pak::pak("KelvynBladen/CLIQUE")
 
 ## Example
 
-This is a basic workflow which shows how to implement clique and derive
+This is a basic workflow which shows how to implement clique and derive 
 meaningful insights from the resulting importance values:
 
-``` r
+```{r, warning=FALSE, message=FALSE}
 library(CLIQUE)
 library(palmerpenguins)
 library(tidyverse)
 ```
 
-``` r
+```{r}
 penguins = palmerpenguins::penguins |> filter(!is.na(bill_length_mm)) |>
   select(!sex)
 ```
 
-``` r
+```{r, warning=FALSE, message=FALSE}
 v <- clique(formula = factor(species) ~ ., data = penguins,
             method = "rf", cores = 2, parallel = F)
 
@@ -44,30 +54,18 @@ colnames(temp) = paste0(colnames(temp), "_imp")
 df = data.frame(penguins, temp)
 ```
 
-``` r
+```{r, fig.align='center'}
 ggplot(df, aes(x = bill_length_mm, y = bill_length_mm_imp)) +
   geom_point()
-```
-
-<img src="man/figures/README-unnamed-chunk-5-1.png" width="100%" style="display: block; margin: auto;" />
-
-``` r
 
 ggplot(df, aes(x = bill_length_mm, y = bill_length_mm_imp, colour = species)) +
   geom_point()
-```
-
-<img src="man/figures/README-unnamed-chunk-5-2.png" width="100%" style="display: block; margin: auto;" />
-
-``` r
 
 ggplot(df, aes(x = bill_length_mm, y = bill_length_mm_imp, colour = island)) +
   geom_point()
 ```
 
-<img src="man/figures/README-unnamed-chunk-5-3.png" width="100%" style="display: block; margin: auto;" />
-
-``` r
+```{r, fig.align='center'}
 t329 = temp[329, ] |> pivot_longer(cols = everything()) |>
   arrange(desc(value))
 
@@ -76,9 +74,7 @@ t329$name <- factor(t329$name, levels = rev(t329$name))
 ggplot(t329, aes(x = value, y = name)) + geom_point()
 ```
 
-<img src="man/figures/README-unnamed-chunk-6-1.png" width="100%" style="display: block; margin: auto;" />
-
-``` r
+```{r, fig.align='center'}
 t339 = temp[339, ] |> pivot_longer(cols = everything()) |>
   arrange(desc(value))
 
@@ -87,9 +83,8 @@ t339$name <- factor(t339$name, levels = rev(t339$name))
 ggplot(t339, aes(x = value, y = name)) + geom_point()
 ```
 
-<img src="man/figures/README-unnamed-chunk-7-1.png" width="100%" style="display: block; margin: auto;" />
 
-``` r
+```{r, fig.align='center'}
 temp$species = penguins$species
 
 ta = temp |> group_by(species) |> 
@@ -99,14 +94,12 @@ ta$name <- factor(ta$name, levels = rev(unique(ta$name)))
 
 ggplot(ta, aes(x = value, y = name)) + geom_point() +
   ggh4x::facet_wrap2(~species, dir = "v", strip.position = "right")
-```
-
-<img src="man/figures/README-unnamed-chunk-8-1.png" width="100%" style="display: block; margin: auto;" />
-
-``` r
 
 ggplot(temp, aes(x = species, y = bill_length_mm_imp)) +
   geom_boxplot()
 ```
 
-<img src="man/figures/README-unnamed-chunk-8-2.png" width="100%" style="display: block; margin: auto;" />
+```{r, echo=FALSE, eval=FALSE}
+# You'll still need to render `README.Rmd` regularly, to keep `README.md` up-to-date. `devtools::build_readme()` is handy for this.
+# Don't forget to commit and push the resulting figure files, so they display on GitHub and CRAN.
+```
