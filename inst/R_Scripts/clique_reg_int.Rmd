@@ -327,7 +327,8 @@ sc = apply(d1, 2, FUN = function(x){max(abs(x))})
 vr = d1 |> filter(v3 < 0)
 
 mae = colMeans(abs(vr / sc))
-rmse = sqrt(colMeans((vr / sc)^2))
 mae
-rmse
+
+# rmse = sqrt(colMeans((vr / sc)^2))
+# rmse
 ```

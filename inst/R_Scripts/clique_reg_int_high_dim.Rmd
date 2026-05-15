@@ -1,0 +1,276 @@
+---
+title: "clique_reg_int_high_dim"
+author: "Kelvyn Bladen"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(fastDummies)
+library(caret)
+library(rpart)
+library(tidyverse)
+library(GGally)
+library(treeshap)
+library(lime)
+
+# rm(list = ls())   # remove all objects
+# gc()              # force garbage collection
+```
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+source("../../R/clique.R")
+```
+
+\newpage
+
+# Data
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(1234)
+n <- 1000
+s = mat.or.vec(100, 100)
+s[] = 0.5
+diag(s) = 1
+x = as.data.frame(MASS::mvrnorm(n = n, mu = rep(0, 100), Sigma = s))
+z = rbinom(n, size = 1, prob = 0.5)
+
+y = ifelse(z == 1,
+           3*(x$V1 + x$V2 + x$V3 + x$V4 + x$V5) + 3 + rnorm(n, sd = 0.1), 
+           3*(x$V6 + x$V7 + x$V8 + x$V9 + x$V10) - 3 + rnorm(n, sd = 0.1))
+
+df <- data.frame(x, z, y)
+
+ggpairs(df, c(1, 6, 11, 102), mapping = aes(color = z > 0))
+# ggsave("regint_data.pdf", dpi = 1600, width = 4, height = 2.5)
+```
+
+\newpage
+# Training Local Importance
+
+```{r, warning=FALSE, message=FALSE}
+ctrl = caret::trainControl(method = "CV", number = 5)
+tictoc::tic()
+m = caret::train(y ~ ., data = df, method = "rf", tuneLength = 10,
+          trControl = ctrl)
+tictoc::toc()
+m$bestTune # 90
+
+mod = randomForest::randomForest(y ~ ., df, mtry = m$bestTune$mtry, 
+                                 importance = T)
+mod$rsq
+randomForest::varImpPlot(mod, n.var = 12)
+
+# Shap #
+tictoc::tic()
+rf_unified <- treeshap::randomForest.unify(mod, df)
+rf_res <- treeshap(rf_unified, df)
+shap = as.data.frame(rf_res$shaps)
+tictoc::toc()
+
+# LIME #
+tuneGrid <- expand.grid(mtry = m$bestTune$mtry)
+#rt = caret::train(df[, 1:101], df[[102]], method = "rf", tuneGrid = tuneGrid)
+tictoc::tic()
+explanation <- lime(df[, 1:101], m, bin_continuous = T, n_bins = 20, 
+                    use_density = T)
+elim = explain(df[, 1:101], explanation, n_features = 101, n_permutations = 500)
+tictoc::toc()
+
+#plot_explanations(elim)
+
+lime = elim %>% dplyr::select(case, feature, feature_weight) %>% 
+  pivot_wider(names_from = feature, values_from = c(feature_weight)) %>% 
+  dplyr::select(-case) %>% as.data.frame()
+# End #
+
+########################################
+library(mlbench)
+library(featureImportance)
+library(mlr)
+
+# Create a regression task
+tictoc::tic()
+task1 = mlr::makeRegrTask(data = df, target = "y")
+learner <- mlr::makeLearner("regr.randomForest", mtry = m$bestTune$mtry)
+model <- mlr::train(learner, task1)
+
+# Compute feature importance
+ici <- featureImportance(model, data = df, target = "y", 
+                         n.feat.perm = 25,
+                         local = TRUE)
+tictoc::toc()
+
+# View results
+print(ici)
+
+iii = ici$importance |> 
+  pivot_wider(id_cols = c(replace.id, n.feat.perm), names_from = features, 
+              values_from = mse) |>
+  group_by(replace.id) |>
+  summarize(V1 = mean(V1), V6 = mean(V6),  V11 = mean(V11)) |>
+  dplyr::select(!replace.id)
+
+ggplot(df, aes(x = V1, y = iii$V1)) +
+  geom_point()
+
+ggplot(df, aes(x = V1, y = iii$V1, color = z > 0)) +
+  geom_point()
+
+##############################
+tictoc::tic()
+xg = clique(formula = y ~ ., data = df, parallel = T, cores = 5, seed = 123,
+            method = "rf", tuneGrid = tuneGrid, 
+            nsim = 25, folds = 5, quantile_grid = TRUE)
+tictoc::toc()
+
+setwd("C:/Users/kelvy/github/packages/CLIQUE")
+
+d1 = data.frame(v1 = df[,1],
+                CLIQUE = xg$local_imp$V1,
+                ICI = iii$V1,
+                SHAP = shap$V1, 
+                LIME = lime$V1)
+# ggpairs(d1)
+# ggpairs(d1, mapping = aes(color = z > 0))
+
+d1m = d1 |> mutate(CLIQUE = CLIQUE / max(abs(CLIQUE)),
+                         SHAP = SHAP / max(abs(SHAP)),
+                         LIME = LIME / max(abs(LIME)),
+                         ICI = ICI / max(abs(ICI)),
+                         group = z)
+
+d1_piv = d1m |> select(!v1) |> pivot_longer(cols = 1:4)
+d1_piv$name = factor(d1_piv$name, levels = c("LIME", "SHAP", "ICI", "CLIQUE"))
+
+
+ggplot(d1_piv, aes(x = factor(group), y = value)) +
+  geom_boxplot(coef = 10) +
+  #geom_blank(data = blank_data, aes(x = x, y = y)) + # Add the blank data
+  facet_wrap(~ name, nrow = 1, scales = "fixed") +
+  scale_y_continuous(limits = c(-1, 1)) +
+  expand_limits(y = 0) +
+  labs(x = "z",
+       y = "Scaled V1 Importance Values")
+
+
+ggsave("inst/plots/reg_int_high_dim_V1.pdf", dpi = 1600,
+       width = 8, height = 2.6)
+
+##################
+
+d6 = data.frame(v6 = df[,6],
+                CLIQUE = xg$local_imp$V6,
+                ICI = iii$V6,
+                SHAP = shap$V6, 
+                LIME = lime$V6,
+                group = z)
+# ggpairs(d1)
+# ggpairs(d1, mapping = aes(color = z > 0))
+
+d6m = d6 |> mutate(CLIQUE = CLIQUE / max(abs(CLIQUE)),
+                         SHAP = SHAP / max(abs(SHAP)),
+                         LIME = LIME / max(abs(LIME)),
+                         ICI = ICI / max(abs(ICI)))
+
+d6_piv = d6m |> select(!v6) |> pivot_longer(cols = 1:4)
+d6_piv$name = factor(d6_piv$name, levels = c("LIME", "SHAP", "ICI", "CLIQUE"))
+
+
+ggplot(d6_piv, aes(x = factor(group), y = value)) +
+  geom_boxplot(coef = 10) +
+  #geom_blank(data = blank_data, aes(x = x, y = y)) + # Add the blank data
+  facet_wrap(~ name, nrow = 1, scales = "fixed") +
+  scale_y_continuous(limits = c(-1, 1)) +
+  expand_limits(y = 0) +
+  labs(x = "z",
+       y = "Scaled V6 Importance Values")
+
+ggsave("inst/plots/reg_int_high_dim_V6.pdf", dpi = 1600,
+       width = 8, height = 2.6)
+
+########################################################
+# summary(d1$LIME)
+# gi = ggplot(d1, aes(x = v1, y = ICI, color = z > 0)) +
+#   geom_point() + 
+#   scale_y_continuous(limits = c(-0.31, 1), breaks = seq(-0.25, 1, 0.25))
+# 
+# ggplot(d1, aes(z > 0, y = CLIQUE)) +
+#   geom_boxplot()
+# ggplot(d1, aes(z > 0, y = SHAP)) +
+#   geom_boxplot()
+# ggplot(d1, aes(z > 0, y = ICI)) +
+#   geom_boxplot()
+# ggplot(d1, aes(z > 0, y = LIME)) +
+#   geom_boxplot()
+# 
+# gq = ggplot(d1, aes(x = v1, y = CLIQUE, color = z > 0)) +
+#   geom_point() + 
+#   scale_y_continuous(limits = c(-0.31, 1), breaks = seq(-0.25, 1, 0.25))
+# gs = ggplot(d1, aes(x = v1, y = SHAP, color = z > 0)) +
+#   geom_point() + ylim(-0.5, 0.52)
+# gl = ggplot(d1, aes(x = v1, y = LIME, color = z > 0)) +
+#   geom_point() + ylim(-0.5, 0.52)
+# 
+# library(patchwork)
+# 
+# gl + gs + gi + gq + 
+#   plot_layout(guides = "collect", axes = "collect") &
+#   ggeasy::easy_add_legend_title("z > 0") & ggeasy::easy_move_legend("bottom")
+# 
+# ggsave("inst/plots/regint_patch.jpg", dpi = 1200, width = 4.4, height = 4.4)
+# 
+# gl + gs + gi + gq + 
+#   plot_layout(guides = "collect", axes = "collect") &
+#   ggeasy::easy_add_legend_title("z > 0")
+# 
+# ggsave("inst/plots/regint_patch_1col.pdf", 
+#        dpi = 1600, width = 5.5, height = 3.3)
+# 
+# patc = gl + gs + gi + gq + 
+#   plot_layout(guides = "collect", axes = "collect") &
+#   ggeasy::easy_add_legend_title("z > 0")
+# 
+# gdat + plot_spacer() + patc + 
+#   plot_layout(guides = "collect", widths = c(10,0.2,12))
+# 
+# ggsave("inst/plots/regint_all_patch_1col.pdf", 
+#        dpi = 1600, width = 8.8, height = 3.3)
+# 
+# d2 = data.frame(val2 = df[,2],
+#                 grid = xm$local_imp$v2,
+#                 shap = shap$v2, lime = lime$v2)
+# ggpairs(d2)
+# ggpairs(d2, mapping = aes(color = z > 0))
+# 
+# d3 = data.frame(val3 = df[,3],
+#                 grid = xm$local_imp$v3,
+#                 shap = shap$v3, lime = lime$v3)
+# ggpairs(d3)
+# ggpairs(d3, mapping = aes(color = z > 0))
+# 
+# dz = data.frame(valz = df[,4],
+#                 grid = xm$local_imp$v4,
+#                 shap = shap$v4, lime = lime$v4)
+# ggpairs(dz)
+# ggpairs(dz, mapping = aes(color = z > 0))
+```
+
+
+```{r}
+sc = apply(d1, 2, FUN = function(x){max(abs(x))})
+vr = d1 |> filter(v3 < 0)
+
+mae = colMeans(abs(vr / sc))
+rmse = sqrt(colMeans((vr / sc)^2))
+mae
+rmse
+```

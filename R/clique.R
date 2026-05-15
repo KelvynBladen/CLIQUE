@@ -4,7 +4,6 @@
 #' @importFrom dplyr %>% arrange select pull
 #' @importFrom tidyr uncount
 #' @importFrom stats model.frame quantile predict
-#' @importFrom pracma gcd
 #' @importFrom fastDummies dummy_cols
 #' @importFrom parallel makeCluster stopCluster
 #' @importFrom doParallel registerDoParallel
@@ -15,15 +14,19 @@
 #'   and evaluates changes in prediction error under controlled perturbations
 #'   of each feature, enabling observation-level assessment of feature
 #'   importance.
-#' @param formula an object of class "\link{formula}" (or one that can be
+#' @param x \code{x} is an object where samples are in rows and features are
+#'   in columns. This could be a data frame or matrix with column names.
+#' @param y A numeric or factor vector containing the response feature.
+#' @param formula An object of class "\link{formula}" (or one that can be
 #'   coerced to that class): a symbolic description of the model to be fitted.
-#' @param data a data frame containing the variables in the model.
+#' @param data A data frame containing the variables in the model.
 #'   By default the variables are taken from \code{environment(formula)}.
 #' @param method A character string specifying the model to be passed to
 #'   \code{caret::train}. Valid options correspond to models registered in caret.
 #'   See \code{caret::modelLookup()} for available methods.
 #' @param tuneGrid A data frame with tuning parameters for the specified model.
 #'   See \code{caret::train} for model-specific tuning structures.
+#' @param folds Number of folds used for cross-validation. Default is 5.
 #' @param parallel Logical; if TRUE, computations are run in parallel.
 #'   Default is TRUE.
 #' @param cores Number of CPU cores to use when \code{parallel = TRUE}.
@@ -32,13 +35,17 @@
 #'   Set to \code{NULL} to disable.
 #' @param nsim Number of grid points used to replace each variable.
 #'   Default is 25.
-#' @param folds Number of folds used for cross-validation. Default is 5.
 #' @param quantile_grid Logical; if TRUE, replacement points are chosen
 #'   using quantiles of the variable. If FALSE, a uniform grid is used.
 #'   Default is TRUE.
-#' @param brier_score Logical; if TRUE, uses the Brier score instead of
-#'   classification accuracy when computing individual errors.
-#'   Only applicable for classification problems. Default is FALSE.
+#' @param class_loss Logical; if FALSE simply computes individual errors based
+#'   on classification accuracy. If TRUE, averages the \code{loss_function}
+#'   across class level probabilities when computing individual errors, serving
+#'   as a loss generalized version of a Brier Score. Only applicable for
+#'   classification problems. Default is FALSE.
+#' @param loss_function A function for computing the loss/error between model
+#'   predictions and the response. Argument is necessary for regression or
+#'   if \code{class_loss = TRUE}. Default is Absolute Error.
 #'
 #' @return A list containing:
 #'   \item{bestTune}{Best hyper-parameter combination selected by caret.}
@@ -51,19 +58,40 @@
 #' @export
 #'
 #' @examples
-#' v <- clique(formula = factor(Species) ~ ., data = iris,
+#' v <- clique(x = iris[1:4], y = iris$Species,
 #'             method = "rf", cores = 2)
 #' v$local_imp
 
-clique <- function(formula, data,
-                   method = "rf", tuneGrid = NULL,
+clique <- function(x, y, formula, data,
+                   method = "rf", tuneGrid = NULL, folds = 5,
                    parallel = TRUE, cores = 5, seed = 123,
-                   nsim = 25, folds = 5, quantile_grid = TRUE,
-                   brier_score = FALSE) {
-  # Set up the data
-  model_frame <- model.frame(formula, data = data)
-  x <- model_frame[, -1]
-  y <- model_frame[, 1]
+                   nsim = 25, quantile_grid = TRUE,
+                   class_loss = FALSE,
+                   loss_function = function(truth, predictions)
+                     abs(truth - predictions)
+                   ) {
+
+  # Did user provide x and y?
+  using_xy <- !missing(x) && !missing(y)
+
+  # Did user provide formula interface?
+  using_formula <- !missing(formula) && !missing(data)
+
+  # If neither interface is supplied
+  if (!using_xy && !using_formula) {
+    stop("You must provide either (x & y) or (formula & data).")
+  }
+
+  if (!using_xy) {
+    model_frame <- model.frame(formula, data = data)
+    x <- model_frame[, -1]
+    y <- model_frame[, 1]
+  }
+
+  if (length(y) != nrow(x)) {
+    stop("x and y have incompatible dimensions.")
+  }
+
   nc <- ncol(x)
   if (is.factor(y)) {
     y <- factor(y, labels = make.names(levels(y)))
@@ -112,11 +140,11 @@ clique <- function(formula, data,
   if (!is.factor(y)) {
     truth <- global_model$pred$obs
     predictions <- global_model$pred$pred
-    m <- abs(truth - predictions)
-  } else if (brier_score) {
+    m <- loss_function(truth, predictions)
+  } else if (class_loss) {
     truth <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
     predictions <- global_model$pred %>% dplyr::select(levels(y))
-    m <- rowMeans(abs(truth - predictions))
+    m <- rowMeans(loss_function(truth, predictions))
   } else {
     truth <- global_model$pred$obs
     predictions <- global_model$pred$pred
@@ -128,10 +156,12 @@ clique <- function(formula, data,
     seq_len(nc),
     function(ii) {
       get_var_loc(ii, x = x, y = y, truth = truth, nsim = nsim, mods = mods,
-                  flds0 = flds0, m = m, typ = ifelse(brier_score, "prob", "raw"),
+                  flds0 = flds0, m = m,
+                  typ = ifelse(class_loss & is.factor(y), "prob", "raw"),
                   quantile_grid = quantile_grid, predictions = predictions,
-                  brier_score = brier_score)
-    }
+                  class_loss = class_loss, loss_function = loss_function)
+    },
+    future.seed = T
   ) %>% as.data.frame()
   colnames(x_loc) <- colnames(x)
 
@@ -183,12 +213,12 @@ generate_grid_values <- function(xi, nsim, quantile_grid) {
 #' Internal helper function to update predictions and calculate errors
 #' @keywords internal
 calculate_new_m <- function(grid_val, x, y, ii, mods, flds0, truth, typ,
-                            predictions, brier_score) {
+                            predictions, class_loss, loss_function) {
   x_new <- x
   x_new[, ii] <- grid_val
 
   for (k in seq_along(mods)) {
-    if(brier_score){
+    if(class_loss & is.factor(y)){
       predictions[flds0 == k,] = predict(mods[[k]], x_new[flds0 == k,],
                                          type = typ)
     } else {
@@ -197,10 +227,9 @@ calculate_new_m <- function(grid_val, x, y, ii, mods, flds0, truth, typ,
     }
   }
   if(!is.factor(y)){
-    return(abs(truth - predictions))
-  } else if (brier_score){
-    # Calculate the row-wise mean squared error
-    return(rowMeans(abs(truth - predictions)))
+    return(loss_function(truth, predictions))
+  } else if (class_loss & is.factor(y)){
+    return(rowMeans(loss_function(truth, predictions)))
   } else {
     return(as.numeric(truth != predictions))
   }
@@ -210,7 +239,7 @@ calculate_new_m <- function(grid_val, x, y, ii, mods, flds0, truth, typ,
 #' aggregates all new errors to vector matching the length of the response.
 #' @keywords internal
 get_var_loc <- function(ii, x, y, truth, nsim, mods, flds0, m, typ,
-                  quantile_grid, predictions, brier_score) { # depends on y
+                  quantile_grid, predictions, class_loss, loss_function) { # depends on y
 
   # Generate grid values for the selected variable
   grid_vals <- generate_grid_values(x[, ii], nsim, quantile_grid)
@@ -218,7 +247,8 @@ get_var_loc <- function(ii, x, y, truth, nsim, mods, flds0, m, typ,
   # Apply over all grid values
   new_m_mat <- sapply(grid_vals, calculate_new_m, x = x, y = y, ii = ii,
                       mods = mods, flds0 = flds0, truth = truth, typ = typ,
-                      predictions = predictions, brier_score = brier_score)
+                      predictions = predictions, class_loss = class_loss,
+                      loss_function = loss_function)
 
   # Calculate the mean error for each observation and adjust by baseline errors
   rowMeans(new_m_mat) - m
@@ -231,7 +261,6 @@ get_var_loc <- function(ii, x, y, truth, nsim, mods, flds0, m, typ,
 # library(foreach)
 # library(future.apply)
 # library(fastDummies)
-# library(pracma)
 #
 # library(randomForest)
 # library(tidyverse)

@@ -1,4 +1,4 @@
-
+library(randomForest)
 library(randomForestVIP)
 # lichen = randomForestVIP::lichen
 # lichen$LobaOreg = factor(lichen$LobaOreg)
@@ -9,39 +9,40 @@ library(randomForestVIP)
 load("data/lichen.rda")
 cor(lichen[,c("MinTempAve", "ACONIF","Elevation","AmbVapPressAve")])
 
-library(phateR)
+# library(phateR)
 # rfphate in python
 # save phatel to csv, import in R
-slich = scale(lichen[,-1])
-phates <- phate(slich)
-summary(phates)
-ggplot(phates, aes(x = PHATE1, y = PHATE2, color = lichen$LobaOreg)) +
-  geom_point()
 
-phatel = read.csv("lichen_phate.csv", header = T)
-colnames(phatel) = c("PHATE1", "PHATE2")
-ggplot(phatel, aes(x = PHATE1, y = PHATE2, color = lichen$LobaOreg)) +
-  geom_point()
-ggplot(phatel, aes(x = PHATE1, y = PHATE2, color = lichen$MinTempAve > 450)) +
-  geom_point()
-ggplot(phatel, aes(x = PHATE1, y = PHATE2, color = lichen$MinTempDiff > -275)) +
-  geom_point()
+# slich = scale(lichen[,-1])
+# phates <- phate(slich)
+# summary(phates)
+# ggplot(phates, aes(x = PHATE1, y = PHATE2, color = lichen$LobaOreg)) +
+#   geom_point()
 
-ggplot(phatel, aes(x = PHATE1, y = PHATE2,
-                   color = xm2$local_imp$MinTempAve)) +
-  geom_point()
-
-z = abs(xm2$local_imp$MinTempAve) > 0.12
-ggplot(phatel, aes(x = PHATE1, y = PHATE2,
-                   color = z)) +
-  geom_point()
-table(z, phatel$PHATE1 > -0.02)
-
-ggplot(phatel, aes(x = PHATE1, y = PHATE2,
-                   color = abs(xm2$local_imp$ACONIF) > 0.1)) +
-  geom_point()
-
-ggpairs(phatel)
+# phatel = read.csv("lichen_phate.csv", header = T)
+# colnames(phatel) = c("PHATE1", "PHATE2")
+# ggplot(phatel, aes(x = PHATE1, y = PHATE2, color = lichen$LobaOreg)) +
+#   geom_point()
+# ggplot(phatel, aes(x = PHATE1, y = PHATE2, color = lichen$MinTempAve > 450)) +
+#   geom_point()
+# ggplot(phatel, aes(x = PHATE1, y = PHATE2, color = lichen$MinTempDiff > -275)) +
+#   geom_point()
+#
+# ggplot(phatel, aes(x = PHATE1, y = PHATE2,
+#                    color = xm2$local_imp$MinTempAve)) +
+#   geom_point()
+#
+# z = abs(xm2$local_imp$MinTempAve) > 0.12
+# ggplot(phatel, aes(x = PHATE1, y = PHATE2,
+#                    color = z)) +
+#   geom_point()
+# table(z, phatel$PHATE1 > -0.02)
+#
+# ggplot(phatel, aes(x = PHATE1, y = PHATE2,
+#                    color = abs(xm2$local_imp$ACONIF) > 0.1)) +
+#   geom_point()
+#
+# ggpairs(phatel)
 
 set.seed(12345)
 ry = randomForest(LobaOreg ~ ., data = lichen, mtry = 10, importance = T)
@@ -209,6 +210,8 @@ ggplot(dacon1, aes(x = MinTempAve, y = value)) +
        y = "Scaled ACONIF Importance Values ")
 
 ggsave("inst/plots/lichen_aconif_wide1.pdf", dpi = 1600, width = 8, height = 2.6)
+
+################################################################################
 
 ggpairs(dacon, mapping = aes(colour = lichen$LobaOreg))
 ggpairs(dacon, mapping = aes(colour = MinTempAve > 65))

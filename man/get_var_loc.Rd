@@ -17,7 +17,8 @@ get_var_loc(
   typ,
   quantile_grid,
   predictions,
-  brier_score
+  class_loss,
+  loss_function
 )
 }
 \description{

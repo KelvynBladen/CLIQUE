@@ -5,24 +5,32 @@
 \title{clique}
 \usage{
 clique(
+  x,
+  y,
   formula,
   data,
   method = "rf",
   tuneGrid = NULL,
+  folds = 5,
   parallel = TRUE,
   cores = 5,
   seed = 123,
   nsim = 25,
-  folds = 5,
   quantile_grid = TRUE,
-  brier_score = FALSE
+  class_loss = FALSE,
+  loss_function = function(truth, predictions) abs(truth - predictions)
 )
 }
 \arguments{
-\item{formula}{an object of class "\link{formula}" (or one that can be
+\item{x}{\code{x} is an object where samples are in rows and features are
+in columns. This could be a data frame or matrix with column names.}
+
+\item{y}{A numeric or factor vector containing the response feature.}
+
+\item{formula}{An object of class "\link{formula}" (or one that can be
 coerced to that class): a symbolic description of the model to be fitted.}
 
-\item{data}{a data frame containing the variables in the model.
+\item{data}{A data frame containing the variables in the model.
 By default the variables are taken from \code{environment(formula)}.}
 
 \item{method}{A character string specifying the model to be passed to
@@ -31,6 +39,8 @@ See \code{caret::modelLookup()} for available methods.}
 
 \item{tuneGrid}{A data frame with tuning parameters for the specified model.
 See \code{caret::train} for model-specific tuning structures.}
+
+\item{folds}{Number of folds used for cross-validation. Default is 5.}
 
 \item{parallel}{Logical; if TRUE, computations are run in parallel.
 Default is TRUE.}
@@ -44,15 +54,19 @@ Set to \code{NULL} to disable.}
 \item{nsim}{Number of grid points used to replace each variable.
 Default is 25.}
 
-\item{folds}{Number of folds used for cross-validation. Default is 5.}
-
 \item{quantile_grid}{Logical; if TRUE, replacement points are chosen
 using quantiles of the variable. If FALSE, a uniform grid is used.
 Default is TRUE.}
 
-\item{brier_score}{Logical; if TRUE, uses the Brier score instead of
-classification accuracy when computing individual errors.
-Only applicable for classification problems. Default is FALSE.}
+\item{class_loss}{Logical; if FALSE simply computes individual errors based
+on classification accuracy. If TRUE, averages the \code{loss_function}
+across class level probabilities when computing individual errors, serving
+as a loss generalized version of a Brier Score. Only applicable for
+classification problems. Default is FALSE.}
+
+\item{loss_function}{A function for computing the loss/error between model
+predictions and the response. Argument is necessary for regression or
+if \code{class_loss = TRUE}. Default is Absolute Error.}
 }
 \value{
 A list containing:
@@ -72,7 +86,7 @@ Implements the CLIQUE method for local variable importance
   importance.
 }
 \examples{
-v <- clique(formula = factor(Species) ~ ., data = iris,
+v <- clique(x = iris[1:4], y = iris$Species,
             method = "rf", cores = 2)
 v$local_imp
 }

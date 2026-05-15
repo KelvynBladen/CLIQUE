@@ -14,7 +14,8 @@ calculate_new_m(
   truth,
   typ,
   predictions,
-  brier_score
+  class_loss,
+  loss_function
 )
 }
 \description{
