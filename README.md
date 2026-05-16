@@ -4,6 +4,8 @@
 # CLIQUE
 
 <!-- badges: start -->
+
+[![R-CMD-check](https://github.com/KelvynBladen/CLIQUE/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/KelvynBladen/CLIQUE/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
 The goal of CLIQUE is to compute local variable importance values for a

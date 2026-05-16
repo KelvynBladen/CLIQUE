@@ -2,38 +2,83 @@
 % Please edit documentation in R/pdp_multiclass.R
 \name{pdp_multiclass}
 \alias{pdp_multiclass}
-\title{pdp_multiclass}
+\title{Multiclass Partial Dependence Plots for Predictors}
 \usage{
-pdp_multiclass(
-  object = randomForest(Species ~ ., data = datasets::iris, probability = TRUE),
-  pred.data = datasets::iris,
-  response = "Species",
-  pred.var = c("Petal.Length")
-)
+pdp_multiclass(object, pred.data, response, pred.vars, prob = TRUE, ...)
 }
 \arguments{
-\item{object}{words.}
+\item{object}{A fitted multiclass classification model supporting
+\code{pdp::partial()}.}
 
-\item{pred.data}{words.}
+\item{pred.data}{A data frame containing the training data used for PDP
+estimation. Must include both predictors and the response variable.}
 
-\item{response}{words.}
+\item{response}{A character string specifying the name of the response variable
+in \code{pred.data}. Associated response must be a factor for multiclass
+classification.}
 
-\item{pred.var}{words.}
+\item{pred.vars}{A character vector specifying one or more predictor
+variables for which partial dependence should be computed.}
+
+\item{prob}{Logical indicating whether or not partial dependence for
+classification problems should be returned on the probability scale,
+rather than the centered logit. If FALSE, the partial dependence
+function is on a scale similar to the logit. Default is TRUE.}
+
+\item{...}{Additional arguments to be passed onto \link{partial}.}
 }
 \value{
-A list containing:
-  \item{data}{A data frame of values for the plots.}
-  \item{color}{Colored plot.}
-  \item{facet}{Faceted plot.}
+A named list containing:
+\describe{
+  \item{data}{A data frame containing all PDP values across predictors and
+    classes}
+  \item{<var>_color}{ggplot object showing PDPs colored by class for
+    predictor <var>}
+  \item{<var>_facet}{ggplot object showing PDPs faceted by class for
+    predictor <var>}
+  \item{combo_color}{Combined PDPs colored by class and faceted by
+  predictor variable for comparison}
+  \item{combo_facet}{Combined PDPs with class-by-predictor faceting for
+  comparison}
+}
 }
 \description{
-words.
+Computes partial dependence plots (PDPs) for multiclass
+classification models across one or more predictor variables and returns
+individual and combined visualizations.
+
+For each predictor variable, PDPs are computed for each class of the response
+using \code{pdp::partial()} with class-specific probability estimates.
+The function produces:
+\itemize{
+  \item Class-specific PDP plots (color-coded and faceted)
+  \item Combined small-multiple plots (color-coded and faceted) across
+    predictor variables
+  \item A unified dataset containing all PDP values
+}
+}
+\details{
+This function assumes that the provided model supports class probability
+estimation and that \code{pdp::partial()} can be applied with the
+\code{which.class} argument. The PDPs are computed independently for each
+class and predictor.
 }
 \examples{
-p = pdp_multiclass(randomForest::randomForest(Species ~ .,
-                   data = datasets::iris,
-                   probability = TRUE), datasets::iris, "Species",
-                   pred.var = "Petal.Length")
-p$color
-p$facet
+\dontrun{
+library(randomForest)
+data(iris)
+
+rf <- randomForest(Species ~ ., data = iris, probability = TRUE)
+
+pd <- pdp_multiclass(
+  object = rf,
+  pred.data = iris,
+  response = "Species",
+  pred.vars = c("Petal.Length", "Petal.Width", "Sepal.Length", "Sepal.Width")
+)
+
+pd$combo_color
+pd$combo_facet
+}
+
 }

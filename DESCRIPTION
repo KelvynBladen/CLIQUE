@@ -7,8 +7,11 @@ Authors@R: c(person("Kelvyn", "Bladen", role = c("aut", "cre"),
              person("Adele", "Cutler", role = "aut"),
              person(given=c("D.", "Richard"), "Cutler", role = "aut"),
              person(given=c("Kevin", "R."), "Moon", role = "aut"))
-Description: More about what it does (maybe more than one line)
-    Use four spaces when indenting paragraphs within the Description.
+Description: Provides methods for interpretable machine learning with an 
+    emphasis on local feature importance estimation. The package implements the 
+    CLIQUE framework for computing observation-level importance values. 
+    Additional tools are included for visualizing multiclass partial dependence 
+    relationships across predictors and response classes.
 License: GPL-3
 URL: https://github.com/KelvynBladen/CLIQUE
 Depends: 
@@ -16,13 +19,13 @@ Depends:
 Imports:
     caret,
     dplyr,
-    datasets,
     doParallel,
     fastDummies,
     future.apply,
     stats,
     tidyr,
     ggplot2,
+    ggh4x,
     randomForest,
     rlang,
     pdp
