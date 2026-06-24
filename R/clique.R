@@ -1,7 +1,7 @@
 # Main function
 #' clique
 #' @importFrom caret createFolds train trainControl
-#' @importFrom dplyr %>% arrange select pull
+#' @importFrom dplyr arrange select pull
 #' @importFrom tidyr uncount
 #' @importFrom stats model.frame quantile predict
 #' @importFrom fastDummies dummy_cols
@@ -62,197 +62,188 @@
 #'             method = "rf", cores = 2)
 #' v$local_imp
 
-clique <- function(x, y, formula, data,
-                   method = "rf", tuneGrid = NULL, folds = 5,
-                   parallel = TRUE, cores = 5, seed = 123,
-                   nsim = 25, quantile_grid = TRUE,
-                   class_loss = FALSE,
-                   loss_function = function(truth, predictions)
-                     abs(truth - predictions)
-                   ) {
-
-  # Did user provide x and y?
-  using_xy <- !missing(x) && !missing(y)
-
-  # Did user provide formula interface?
-  using_formula <- !missing(formula) && !missing(data)
-
-  # If neither interface is supplied
-  if (!using_xy && !using_formula) {
-    stop("You must provide either (x & y) or (formula & data).")
-  }
-
-  if (!using_xy) {
-    model_frame <- model.frame(formula, data = data)
-    x <- model_frame[, -1]
-    y <- model_frame[, 1]
-  }
-
-  if (length(y) != nrow(x)) {
-    stop("x and y have incompatible dimensions.")
-  }
-
-  nc <- ncol(x)
-  if (is.factor(y)) {
-    y <- factor(y, labels = make.names(levels(y)))
-  }
-
-  # Set up cross-validation folds
-  set.seed(seed)
-  flds <- caret::createFolds(y, k = folds, returnTrain = TRUE)
-  set.seed(seed)
-  flds0 <- caret::createFolds(y, k = folds, list = FALSE, returnTrain = FALSE)
-
-  # Parallel setup
-  if (parallel) {
-    cl <- parallel::makeCluster(cores)
-    doParallel::registerDoParallel(cl)
-    # on.exit({
-    #   parallel::stopCluster(cl)
-    #   env <- foreach:::.foreachGlobals
-    #   rm(list=ls(name=env), pos=env)
-    # })
-    on.exit({
-      parallel::stopCluster(cl)
-    }, add = TRUE)
-  }
-
-  # Train the global model: invalid connect
-  global_model <- caret::train(
-    x, y,
-    method = method,
-    tuneGrid = tuneGrid,
-    trControl = caret::trainControl(
-      method = "cv",
-      index = flds,
-      savePredictions = "final",
-      classProbs = TRUE
-    )
-  )
-
-  # Train models for each fold
-  mods <- train_models(x, y, folds, flds0, method,
-                       global_model$finalModel$tuneValue)
-
-  global_model$pred = global_model$pred %>% dplyr::arrange(.data$rowIndex)
-
-  # Calculate errors
-  if (!is.factor(y)) {
-    truth <- global_model$pred$obs
-    predictions <- global_model$pred$pred
-    m <- loss_function(truth, predictions)
-  } else if (class_loss) {
-    truth <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
-    predictions <- global_model$pred %>% dplyr::select(levels(y))
-    m <- rowMeans(loss_function(truth, predictions))
-  } else {
-    truth <- global_model$pred$obs
-    predictions <- global_model$pred$pred
-    m <- as.numeric(truth != predictions)
-  }
-
-  # Task function for parallel computation
-  x_loc <- future.apply::future_lapply(
-    seq_len(nc),
-    function(ii) {
-      get_var_loc(ii, x = x, y = y, truth = truth, nsim = nsim, mods = mods,
-                  flds0 = flds0, m = m,
-                  typ = ifelse(class_loss & is.factor(y), "prob", "raw"),
-                  quantile_grid = quantile_grid, predictions = predictions,
-                  class_loss = class_loss, loss_function = loss_function)
-    },
-    future.seed = T
-  ) %>% as.data.frame()
-  colnames(x_loc) <- colnames(x)
-
-  # Output
-  list(
-    bestTune = global_model$bestTune,
-    results = global_model$results,
-    finalModel = global_model$finalModel,
-    local_imp = x_loc
-  )
-}
-
-#' Internal helper to train the CV models
-#' @keywords internal
-train_models <- function(x, y, folds, flds0, method, tuneGrid) {
-  models <- vector("list", length(folds))
-  for (k in seq_len(folds)) {
-    models[[k]] <- caret::train(
-      x[flds0 != k, ], y[flds0 != k],
-      method = method,
-      tuneGrid = tuneGrid,
-      trControl = caret::trainControl(method = "none",
-        classProbs = TRUE)
-    )
-  }
-  return(models)
-}
-
-#' Internal helper function to generate grid values
-#' @keywords internal
-generate_grid_values <- function(xi, nsim, quantile_grid) {
-  if (!is.numeric(xi)) {
-    grid_v <- round(nsim * table(xi) / length(xi))
-    # gd = cheapr::gcd(grid_v) # install
-    # gd <- min(pracma::gcd(grid_v[1], grid_v))
-    grid_vals <- grid_v |> as.data.frame() |>
-      tidyr::uncount(.data$Freq) |>
-      dplyr::pull(1)
-  } else {
-    grid_vals <- if (quantile_grid) {
-      quantile(xi, probs = seq(0, 1, length = nsim)) # Quantile-based grid
-    } else {
-      seq(min(xi), max(xi), length = nsim) # Uniform grid
-    }
-  }
-  grid_vals
-}
-
-#' Internal helper function to update predictions and calculate errors
-#' @keywords internal
-calculate_new_m <- function(grid_val, x, y, ii, mods, flds0, truth, typ,
-                            predictions, class_loss, loss_function) {
-  x_new <- x
-  x_new[, ii] <- grid_val
-
-  for (k in seq_along(mods)) {
-    if(class_loss & is.factor(y)){
-      predictions[flds0 == k,] = predict(mods[[k]], x_new[flds0 == k,],
-                                         type = typ)
-    } else {
-      predictions[flds0 == k] = predict(mods[[k]], x_new[flds0 == k,],
-                                        type = typ)
-    }
-  }
-  if(!is.factor(y)){
-    return(loss_function(truth, predictions))
-  } else if (class_loss & is.factor(y)){
-    return(rowMeans(loss_function(truth, predictions)))
-  } else {
-    return(as.numeric(truth != predictions))
-  }
-}
-
-#' Internal helper function that generates grids for a variable and obtains and
-#' aggregates all new errors to vector matching the length of the response.
-#' @keywords internal
-get_var_loc <- function(ii, x, y, truth, nsim, mods, flds0, m, typ,
-                  quantile_grid, predictions, class_loss, loss_function) { # depends on y
-
-  # Generate grid values for the selected variable
-  grid_vals <- generate_grid_values(x[, ii], nsim, quantile_grid)
-
-  # Apply over all grid values
-  new_m_mat <- sapply(grid_vals, calculate_new_m, x = x, y = y, ii = ii,
-                      mods = mods, flds0 = flds0, truth = truth, typ = typ,
-                      predictions = predictions, class_loss = class_loss,
-                      loss_function = loss_function)
-
-  # Calculate the mean error for each observation and adjust by baseline errors
-  rowMeans(new_m_mat) - m
-}
+# clique <- function(x, y, formula, data,
+#                    method = "rf", tuneGrid = NULL, folds = 5,
+#                    parallel = TRUE, cores = 5, seed = 123,
+#                    nsim = 25, quantile_grid = TRUE,
+#                    class_loss = FALSE,
+#                    loss_function = function(truth, predictions)
+#                      abs(truth - predictions)
+#                    ) {
+#
+#   # Did user provide x and y?
+#   using_xy <- !missing(x) && !missing(y)
+#
+#   # Did user provide formula interface?
+#   using_formula <- !missing(formula) && !missing(data)
+#
+#   # If neither interface is supplied
+#   if (!using_xy && !using_formula) {
+#     stop("You must provide either (x & y) or (formula & data).")
+#   }
+#
+#   if (!using_xy) {
+#     model_frame <- model.frame(formula, data = data)
+#     x <- model_frame[, -1]
+#     y <- model_frame[, 1]
+#   }
+#
+#   if (length(y) != nrow(x)) {
+#     stop("x and y have incompatible dimensions.")
+#   }
+#
+#   nc <- ncol(x)
+#   if (is.factor(y)) {
+#     y <- factor(y, labels = make.names(levels(y)))
+#   }
+#
+#   # Set up cross-validation folds
+#   set.seed(seed)
+#   flds <- caret::createFolds(y, k = folds, returnTrain = TRUE)
+#   set.seed(seed)
+#   flds0 <- caret::createFolds(y, k = folds, list = FALSE, returnTrain = FALSE)
+#
+#   # Parallel setup
+#   if (parallel) {
+#     cl <- parallel::makeCluster(cores)
+#     doParallel::registerDoParallel(cl)
+#     # on.exit({
+#     #   parallel::stopCluster(cl)
+#     #   env <- foreach:::.foreachGlobals
+#     #   rm(list=ls(name=env), pos=env)
+#     # })
+#     on.exit({
+#       parallel::stopCluster(cl)
+#     }, add = TRUE)
+#   }
+#
+#   # Train the global model: invalid connect
+#   global_model <- caret::train(
+#     x, y,
+#     method = method,
+#     tuneGrid = tuneGrid,
+#     trControl = caret::trainControl(
+#       method = "cv",
+#       index = flds,
+#       savePredictions = "final",
+#       classProbs = TRUE
+#     )
+#   )
+#
+#   # Train models for each fold
+#   mods <- train_models(x, y, folds, flds0, method,
+#                        global_model$finalModel$tuneValue)
+#
+#   global_model$pred = global_model$pred |> dplyr::arrange(.data$rowIndex)
+#
+#   # Calculate errors
+#   if (!is.factor(y)) {
+#     truth <- global_model$pred$obs
+#     predictions <- global_model$pred$pred
+#     m <- loss_function(truth, predictions)
+#   } else if (class_loss) {
+#     truth <- fastDummies::dummy_cols(as.data.frame(y))[, -1]
+#     predictions <- global_model$pred |> dplyr::select(levels(y))
+#     m <- rowMeans(loss_function(truth, predictions))
+#   } else {
+#     truth <- global_model$pred$obs
+#     predictions <- global_model$pred$pred
+#     m <- as.numeric(truth != predictions)
+#   }
+#
+#   # Task function for parallel computation
+#   x_loc <- future.apply::future_lapply(
+#     seq_len(nc),
+#     function(ii) {
+#       get_var_loc(ii, x = x, y = y, truth = truth, nsim = nsim, mods = mods,
+#                   flds0 = flds0, m = m,
+#                   typ = ifelse(class_loss & is.factor(y), "prob", "raw"),
+#                   quantile_grid = quantile_grid, predictions = predictions,
+#                   class_loss = class_loss, loss_function = loss_function)
+#     },
+#     future.seed = T
+#   ) |> as.data.frame()
+#   colnames(x_loc) <- colnames(x)
+#
+#   # Output
+#   list(
+#     bestTune = global_model$bestTune,
+#     results = global_model$results,
+#     finalModel = global_model$finalModel,
+#     local_imp = x_loc
+#   )
+# }
+#
+# train_models <- function(x, y, folds, flds0, method, tuneGrid) {
+#   models <- vector("list", length(folds))
+#   for (k in seq_len(folds)) {
+#     models[[k]] <- caret::train(
+#       x[flds0 != k, ], y[flds0 != k],
+#       method = method,
+#       tuneGrid = tuneGrid,
+#       trControl = caret::trainControl(method = "none",
+#         classProbs = TRUE)
+#     )
+#   }
+#   return(models)
+# }
+#
+# generate_grid_values <- function(xi, nsim, quantile_grid) {
+#   if (!is.numeric(xi)) {
+#     grid_v <- round(nsim * table(xi) / length(xi))
+#     # gd = cheapr::gcd(grid_v) # install
+#     # gd <- min(pracma::gcd(grid_v[1], grid_v))
+#     grid_vals <- grid_v |> as.data.frame() |>
+#       tidyr::uncount(.data$Freq) |>
+#       dplyr::pull(1)
+#   } else {
+#     grid_vals <- if (quantile_grid) {
+#       quantile(xi, probs = seq(0, 1, length = nsim)) # Quantile-based grid
+#     } else {
+#       seq(min(xi), max(xi), length = nsim) # Uniform grid
+#     }
+#   }
+#   grid_vals
+# }
+#
+# calculate_new_m <- function(grid_val, x, y, ii, mods, flds0, truth, typ,
+#                             predictions, class_loss, loss_function) {
+#   x_new <- x
+#   x_new[, ii] <- grid_val
+#
+#   for (k in seq_along(mods)) {
+#     if(class_loss & is.factor(y)){
+#       predictions[flds0 == k,] = predict(mods[[k]], x_new[flds0 == k,],
+#                                          type = typ)
+#     } else {
+#       predictions[flds0 == k] = predict(mods[[k]], x_new[flds0 == k,],
+#                                         type = typ)
+#     }
+#   }
+#   if(!is.factor(y)){
+#     return(loss_function(truth, predictions))
+#   } else if (class_loss & is.factor(y)){
+#     return(rowMeans(loss_function(truth, predictions)))
+#   } else {
+#     return(as.numeric(truth != predictions))
+#   }
+# }
+#
+# get_var_loc <- function(ii, x, y, truth, nsim, mods, flds0, m, typ,
+#                   quantile_grid, predictions, class_loss, loss_function) { # depends on y
+#
+#   # Generate grid values for the selected variable
+#   grid_vals <- generate_grid_values(x[, ii], nsim, quantile_grid)
+#
+#   # Apply over all grid values
+#   new_m_mat <- sapply(grid_vals, calculate_new_m, x = x, y = y, ii = ii,
+#                       mods = mods, flds0 = flds0, truth = truth, typ = typ,
+#                       predictions = predictions, class_loss = class_loss,
+#                       loss_function = loss_function)
+#
+#   # Calculate the mean error for each observation and adjust by baseline errors
+#   rowMeans(new_m_mat) - m
+# }
 
 # library(caret)
 # library(dplyr)

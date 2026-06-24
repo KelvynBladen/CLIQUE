@@ -19,8 +19,8 @@ Depends:
 Imports:
     caret,
     dplyr,
-    doParallel,
     fastDummies,
+    future,
     future.apply,
     stats,
     tidyr,
