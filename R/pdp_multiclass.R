@@ -1,7 +1,6 @@
 #' Multiclass Partial Dependence Plots for Predictors
-#' @import ggplot2
 #' @importFrom pdp partial
-#' @importFrom dplyr select
+#' @importFrom dplyr select bind_rows rename all_of
 #' @importFrom tidyr everything
 #' @importFrom randomForest randomForest
 #' @importFrom ggh4x facet_grid2
@@ -97,6 +96,10 @@ pdp_multiclass <- function(object, pred.data, response, pred.vars,
 
   classes <- levels(res)
 
+  if (any(!res %in% classes)) {
+    stop("Response contains values not represented in factor levels.")
+  }
+
   ## output containers
   out <- list()
 
@@ -120,21 +123,26 @@ pdp_multiclass <- function(object, pred.data, response, pred.vars,
         object = object,
         train = pred.data,
         pred.var = v,
-        which.class = i,
+        which.class = classes[i],
         prob = prob,
         ...
       )
+
+      if (!"yhat" %in% names(pd)) {
+        stop("Expected 'yhat' in pdp output. Model interface may be incompatible.")
+      }
 
       pd$yhat.id <- classes[i]
       p_list[[i]] <- pd
     }
 
-    p <- do.call(rbind, p_list)
+    p <- dplyr::bind_rows(p_list)
 
     ## -------------------------
     ## Standardize x-axis column
     ## -------------------------
-    names(p)[names(p) == v] <- "x"
+    stopifnot(v %in% names(p))
+    p <- dplyr::rename(p, x = dplyr::all_of(v))
 
     ## add predictor label
     p$pred.var <- v
@@ -169,7 +177,7 @@ pdp_multiclass <- function(object, pred.data, response, pred.vars,
   ## -------------------------
   ## Combine all predictors
   ## -------------------------
-  all_p <- do.call(rbind, all_p)
+  all_p <- dplyr::bind_rows(all_p)
 
   ## -------------------------
   ## Combined faceted plot
