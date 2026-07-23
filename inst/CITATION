@@ -1,0 +1,26 @@
+citHeader("To cite clique, please cite the methodology paper:")
+
+bibentry(
+  bibtype = "Article",
+  title = "Conditional local importance by quantile expectations",
+  author = c(
+    person(given = "Kelvyn K.", family = "Bladen"),
+    person(given = "Adele", family = "Cutler"),
+    person(given = "D. Richard", family = "Cutler"),
+    person(given = "Kevin R.", family = "Moon")
+  ),
+  journal = "Transactions on Machine Learning Research",
+  year = "2026",
+  url = "https://openreview.net/forum?id=gsuZFPDRqE"
+)
+
+bibentry(
+  bibtype = "Manual",
+  title = "clique: Conditional Local Importance by Quantile Expectation",
+  author = person(
+    given = "Kelvyn",
+    family = "Bladen"
+  ),
+  year = "2026",
+  note = "R package version 1.0.0"
+)

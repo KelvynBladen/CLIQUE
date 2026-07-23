@@ -25,7 +25,7 @@ classification problems should be returned on the probability scale,
 rather than the centered logit. If FALSE, the partial dependence
 function is on a scale similar to the logit. Default is TRUE.}
 
-\item{...}{Additional arguments to be passed onto \link{partial}.}
+\item{...}{Additional arguments passed to [pdp::partial()].}
 }
 \value{
 A named list containing:

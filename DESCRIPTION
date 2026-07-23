@@ -1,7 +1,7 @@
 Package: CLIQUE
 Type: Package
 Title: Conditional Local Importance by Quantile Expectations
-Version: 0.1.0
+Version: 1.0.0
 Authors@R: c(person("Kelvyn", "Bladen", role = c("aut", "cre"), 
              email = "kelvyn.bladen@usu.edu"),
              person("Adele", "Cutler", role = "aut"),
@@ -10,12 +10,12 @@ Authors@R: c(person("Kelvyn", "Bladen", role = c("aut", "cre"),
 Description: Provides methods for interpretable machine learning with an 
     emphasis on local feature importance estimation. The package implements the 
     CLIQUE framework for computing observation-level importance values. 
-    Additional tools are included for visualizing multiclass partial dependence 
+    Additional tools are included for visualizing multi-class partial dependence 
     relationships across predictors and response classes.
 License: GPL-3
 URL: https://github.com/KelvynBladen/CLIQUE
 Depends: 
-    R (>= 4.0.0)
+    R (>= 4.1.0)
 Imports:
     caret,
     dplyr,

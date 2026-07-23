@@ -32,7 +32,7 @@
 #'   classification problems should be returned on the probability scale,
 #'   rather than the centered logit. If FALSE, the partial dependence
 #'   function is on a scale similar to the logit. Default is TRUE.
-#' @param ... Additional arguments to be passed onto \link{partial}.
+#' @param ... Additional arguments passed to [pdp::partial()].
 #'
 #' @return A named list containing:
 #' \describe{
