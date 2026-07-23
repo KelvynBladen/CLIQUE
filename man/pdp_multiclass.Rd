@@ -2,19 +2,19 @@
 % Please edit documentation in R/pdp_multiclass.R
 \name{pdp_multiclass}
 \alias{pdp_multiclass}
-\title{Multiclass Partial Dependence Plots for Predictors}
+\title{Multi-class Partial Dependence Plots for Predictors}
 \usage{
 pdp_multiclass(object, pred.data, response, pred.vars, prob = TRUE, ...)
 }
 \arguments{
-\item{object}{A fitted multiclass classification model supporting
+\item{object}{A fitted multi-class classification model supporting
 \code{pdp::partial()}.}
 
 \item{pred.data}{A data frame containing the training data used for PDP
 estimation. Must include both predictors and the response variable.}
 
 \item{response}{A character string specifying the name of the response variable
-in \code{pred.data}. Associated response must be a factor for multiclass
+in \code{pred.data}. Associated response must be a factor for multi-class
 classification.}
 
 \item{pred.vars}{A character vector specifying one or more predictor
@@ -43,7 +43,7 @@ A named list containing:
 }
 }
 \description{
-Computes partial dependence plots (PDPs) for multiclass
+Computes partial dependence plots (PDPs) for multi-class
 classification models across one or more predictor variables and returns
 individual and combined visualizations.
 

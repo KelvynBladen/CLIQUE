@@ -17,7 +17,7 @@ concrete
 Concrete strength is very important in civil engineering and is a highly
   nonlinear function of age and ingredients. This dataset contains 1030
   instances and there are 8 features relevant to the response: concrete
-  strength. The description of the varaibles are given below.
+  strength. The description of the variables are given below.
 
   Name – Data Type – Measurement
 }

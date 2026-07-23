@@ -1,11 +1,11 @@
-#' Multiclass Partial Dependence Plots for Predictors
+#' Multi-class Partial Dependence Plots for Predictors
 #' @importFrom pdp partial
 #' @importFrom dplyr select bind_rows rename all_of
 #' @importFrom tidyr everything
 #' @importFrom randomForest randomForest
 #' @importFrom ggh4x facet_grid2
 #' @importFrom rlang .data
-#' @description Computes partial dependence plots (PDPs) for multiclass
+#' @description Computes partial dependence plots (PDPs) for multi-class
 #' classification models across one or more predictor variables and returns
 #' individual and combined visualizations.
 #'
@@ -19,12 +19,12 @@
 #'   \item A unified dataset containing all PDP values
 #' }
 #'
-#' @param object A fitted multiclass classification model supporting
+#' @param object A fitted multi-class classification model supporting
 #' \code{pdp::partial()}.
 #' @param pred.data A data frame containing the training data used for PDP
 #'   estimation. Must include both predictors and the response variable.
 #' @param response A character string specifying the name of the response variable
-#'   in \code{pred.data}. Associated response must be a factor for multiclass
+#'   in \code{pred.data}. Associated response must be a factor for multi-class
 #'   classification.
 #' @param pred.vars A character vector specifying one or more predictor
 #'   variables for which partial dependence should be computed.
@@ -91,7 +91,7 @@ pdp_multiclass <- function(object, pred.data, response, pred.vars,
   res <- pred.data[[response]]
 
   if (!is.factor(res)) {
-    stop("`response` must be a factor for multiclass PDP.")
+    stop("`response` must be a factor for multi-class PDP.")
   }
 
   classes <- levels(res)
